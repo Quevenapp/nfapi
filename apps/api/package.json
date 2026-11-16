@@ -1,0 +1,28 @@
+{
+  "name": "@nfapi/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "API central do NFapi (api.nfapi.queven.app): contas, chaves de API e conexão com os cofres dos emitentes.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev --port 8788",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "wrangler types && tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "^1.6.3",
+    "@nfapi/vault-client": "workspace:*",
+    "hono": "^4.13.18",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.2",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.162.0"
+  }
+}

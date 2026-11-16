@@ -1,0 +1,8 @@
+# O cofre (vault/) fica FORA deste workspace de propósito: ele precisa ser
+# autocontido, com lockfile próprio, para o botão "Deploy to Cloudflare".
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  esbuild: true
+  workerd: true

@@ -1,0 +1,23 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "nfapi-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-11-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+
+	"routes": [{ "pattern": "api.nfapi.queven.app", "custom_domain": true }],
+
+	// MASTER_KEY cifra as chaves de pareamento dos cofres; ADMIN_TOKEN protege /admin.
+	"secrets": { "required": ["MASTER_KEY", "ADMIN_TOKEN"] },
+
+	// Contas, chaves de API e emitentes. Nenhum XML fiscal é gravado aqui.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "nfapi-api",
+			"database_id": "",
+			"migrations_dir": "migrations"
+		}
+	]
+}
