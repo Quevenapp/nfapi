@@ -9,7 +9,8 @@
     "test": "pnpm --dir vault test",
     "typecheck": "pnpm --dir vault typecheck",
     "emitir-teste": "tsx tools/emitir-nfse-teste.ts",
-    "emitir-nfe-teste": "tsx tools/emitir-nfe-teste.ts"
+    "emitir-nfe-teste": "tsx tools/emitir-nfe-teste.ts",
+    "testar-cofre": "tsx tools/testar-cofre.ts"
   },
   "devDependencies": {
     "tsx": "^4.23.15"
