@@ -4,7 +4,7 @@
 // São executados pela página do admin e pela IA (antes de aplicar uma
 // atualização), pelo mesmo ponto de entrada.
 
-import { statusHomologacao } from "@nfapi/fiscal-data";
+import { nfseAmbiente, statusHomologacao } from "@nfapi/fiscal-data";
 import { NfseInput, base64ParaTexto, textoParaBase64 } from "@nfapi/nfse-nacional";
 import { PROTOCOL_VERSION, type VaultClient, VaultError } from "@nfapi/vault-client";
 import { z } from "zod";
@@ -45,6 +45,17 @@ export const CENARIOS: Cenario[] = [
 		descricao: "Confere o pareamento, a versão do protocolo e a validade do certificado instalado.",
 		disponivel: true,
 		precisaDePerfil: false,
+	},
+	{
+		id: "nfse.convenio",
+		documento: "nfse",
+		nome: "NFS-e: convênio do município",
+		descricao: "Consulta no Sistema Nacional se o município do emitente tem convênio ativo para emissão.",
+		// As duas rotas tentadas responderam 404 no servidor real em 16/11/2026, e a
+		// documentação (Swagger) da API de parametrização exige certificado para abrir.
+		disponivel: false,
+		motivo: "O endereço da consulta de parâmetros municipais ainda não foi confirmado no servidor real.",
+		precisaDePerfil: true,
 	},
 	{
 		id: "nfse.emitir",
@@ -164,6 +175,35 @@ async function testarStatus(vault: VaultClient, modelo: "nfe" | "nfce", perfil: 
 	};
 }
 
+/**
+ * Consulta os parâmetros de convênio do município. A documentação lista a rota
+ * na API da SEFIN e na de parametrização do ADN; tentamos as duas e relatamos
+ * o que cada uma respondeu.
+ */
+async function testarConvenio(vault: VaultClient, perfil: PerfilTeste, ref: string): Promise<Veredito> {
+	const config = nfseAmbiente("homologacao");
+	const caminho = `parametros_municipais/${perfil.codigoMunicipio}/convenio`;
+	const candidatos = [`${config.sefin}/${caminho}`, `${config.adn}/parametrizacao/${caminho}`];
+	const tentativas: { url: string; http: number; resposta: string }[] = [];
+	for (const url of candidatos) {
+		const res = await vault.transmit({ url, method: "GET", headers: { accept: "application/json" }, timeoutMs: 30_000, ref });
+		const resposta = base64ParaTexto(res.bodyB64).replace(/\s+/g, " ").slice(0, 600);
+		tentativas.push({ url, http: res.status, resposta });
+		if (res.status === 200) {
+			return {
+				resultado: "aprovado",
+				resumo: `Município ${perfil.codigoMunicipio} com parâmetros de convênio no Sistema Nacional.`,
+				detalhes: { tentativas },
+			};
+		}
+	}
+	return {
+		resultado: "reprovado",
+		resumo: `O Sistema Nacional não devolveu o convênio do município ${perfil.codigoMunicipio} (HTTP ${tentativas.map((t) => t.http).join(" e ")}).`,
+		detalhes: { tentativas },
+	};
+}
+
 async function testarEmissaoNfse(
 	d1: D1Database,
 	vault: VaultClient,
@@ -240,6 +280,8 @@ export async function executarCenario(
 			veredito = { resultado: "erro", resumo: "Preencha o perfil de teste do emitente antes de executar." };
 		} else if (cenario.id === "cofre.conexao") {
 			veredito = await testarConexao(vault);
+		} else if (cenario.id === "nfse.convenio") {
+			veredito = await testarConvenio(vault, perfil as PerfilTeste, id);
 		} else if (cenario.id === "nfse.emitir") {
 			veredito = await testarEmissaoNfse(d1, vault, emitter, perfil as PerfilTeste, `teste-${id}`);
 		} else if (cenario.id === "nfe.status" || cenario.id === "nfce.status") {

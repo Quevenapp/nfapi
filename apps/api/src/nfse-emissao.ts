@@ -10,6 +10,7 @@ import {
 	type NfseInput,
 	type RespostaEmissao,
 	base64ParaTexto,
+	comDeclaracaoXml,
 	corpoEmissao,
 	lerRespostaEmissao,
 	montarDps,
@@ -202,7 +203,8 @@ export async function emitirNfse(
 			// ----- Assinar (no cofre) -----
 			try {
 				const assinada = await vault.sign({ xml: dps.xml, tag: "infDPS", profile: NFSE_NACIONAL.assinatura });
-				dpsAssinada = assinada.xml;
+				// O documento transmitido e o arquivado são o mesmo, já com a declaração XML.
+				dpsAssinada = comDeclaracaoXml(assinada.xml);
 			} catch (err) {
 				if (!(err instanceof VaultError)) throw err;
 				const cofreFora = err.status === 0 || err.status >= 500;

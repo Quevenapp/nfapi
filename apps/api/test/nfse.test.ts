@@ -142,7 +142,7 @@ describe("emissão de NFS-e", () => {
 
 		// O que saiu para o governo: ambiente de testes, leiaute da NT 009, assinado.
 		expect(envios()).toHaveLength(1);
-		expect(envios()[0]?.url).toBe("https://sefin.producaorestrita.nfse.gov.br/SefinNacional/nfse");
+		expect(envios()[0]?.url).toBe("https://sefin.producaorestrita.nfse.gov.br/API/SefinNacional/nfse");
 		const dps = await dpsEnviada(envios()[0]);
 		expect(dps).toContain("<tpAmb>2</tpAmb>");
 		expect(dps).toContain("<finNFSe>0</finNFSe>");

@@ -4,6 +4,7 @@ export {
 	type Mensagem,
 	type RespostaEmissao,
 	base64ParaTexto,
+	comDeclaracaoXml,
 	corpoEmissao,
 	corpoEvento,
 	gunzipBase64,

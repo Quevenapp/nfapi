@@ -3,12 +3,14 @@
 	"assinatura": "rsa-sha256",
 	"ambientes": {
 		"producao": {
+			"adn": "https://adn.nfse.gov.br",
 			"sefin": "https://sefin.nfse.gov.br/SefinNacional",
 			"leiaute": "1.01",
 			"schemas": "producao"
 		},
 		"homologacao": {
-			"sefin": "https://sefin.producaorestrita.nfse.gov.br/SefinNacional",
+			"adn": "https://adn.producaorestrita.nfse.gov.br",
+			"sefin": "https://sefin.producaorestrita.nfse.gov.br/API/SefinNacional",
 			"leiaute": "1.01-nt009",
 			"schemas": "producao-restrita"
 		}

@@ -61,14 +61,28 @@ export async function gunzipBase64(b64: string): Promise<string> {
 	return new TextDecoder().decode(bytes);
 }
 
+const DECLARACAO_XML = '<?xml version="1.0" encoding="UTF-8"?>';
+
+/**
+ * A SEFIN exige a declaração XML com a codificação no início do documento
+ * (rejeição E1229 sem ela), mesmo com o conteúdo já em UTF-8. A declaração fica
+ * fora do elemento assinado, então pode ser acrescentada depois da assinatura.
+ */
+export function comDeclaracaoXml(xml: string): string {
+	const semBom = xml.replace(/^﻿/, "");
+	return semBom.trimStart().startsWith("<?xml") ? semBom : DECLARACAO_XML + semBom;
+}
+
 /** Corpo do POST /nfse. */
 export async function corpoEmissao(dpsAssinada: string): Promise<string> {
-	return JSON.stringify({ dpsXmlGZipB64: await gzipBase64(dpsAssinada) });
+	return JSON.stringify({ dpsXmlGZipB64: await gzipBase64(comDeclaracaoXml(dpsAssinada)) });
 }
 
 /** Corpo do POST /nfse/{chave}/eventos. */
 export async function corpoEvento(pedidoAssinado: string): Promise<string> {
-	return JSON.stringify({ pedidoRegistroEventoXmlGZipB64: await gzipBase64(pedidoAssinado) });
+	return JSON.stringify({
+		pedidoRegistroEventoXmlGZipB64: await gzipBase64(comDeclaracaoXml(pedidoAssinado)),
+	});
 }
 
 /** A SEFIN varia a grafia das chaves (erros/erro, Codigo/codigo) conforme a rota. */

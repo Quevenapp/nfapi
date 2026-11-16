@@ -15,6 +15,8 @@ export type PerfilAssinatura = "rsa-sha1" | "rsa-sha256";
 export interface NfseAmbiente {
 	/** Base da API SEFIN Nacional (emissão, consulta e eventos). */
 	sefin: string;
+	/** Host do Ambiente de Dados Nacional (parametrização municipal, distribuição). */
+	adn: string;
 	leiaute: LeiauteDps;
 	/** Pasta dos XSD oficiais em schemas/nfse/. */
 	schemas: string;

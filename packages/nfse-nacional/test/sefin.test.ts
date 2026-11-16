@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { corpoEmissao, gunzipBase64, gzipBase64, lerRespostaEmissao } from "../src";
+import { comDeclaracaoXml, corpoEmissao, gunzipBase64, gzipBase64, lerRespostaEmissao } from "../src";
 
 describe("troca com a SEFIN Nacional", () => {
 	it("compacta e descompacta sem perder acentuação", async () => {
@@ -10,7 +10,15 @@ describe("troca com a SEFIN Nacional", () => {
 		expect(await gunzipBase64(b64)).toBe(xml);
 
 		const corpo = JSON.parse(await corpoEmissao(xml)) as { dpsXmlGZipB64: string };
-		expect(await gunzipBase64(corpo.dpsXmlGZipB64)).toBe(xml);
+		expect(await gunzipBase64(corpo.dpsXmlGZipB64)).toBe(`<?xml version="1.0" encoding="UTF-8"?>${xml}`);
+	});
+
+	it("envia sempre a declaração XML, sem duplicar (a SEFIN rejeita com E1229 sem ela)", () => {
+		const declaracao = '<?xml version="1.0" encoding="UTF-8"?>';
+		expect(comDeclaracaoXml("<DPS/>")).toBe(`${declaracao}<DPS/>`);
+		expect(comDeclaracaoXml(`${declaracao}<DPS/>`)).toBe(`${declaracao}<DPS/>`);
+		// Um BOM antes da declaração também é removido.
+		expect(comDeclaracaoXml(`﻿${declaracao}<DPS/>`)).toBe(`${declaracao}<DPS/>`);
 	});
 
 	it("reconhece a nota autorizada e extrai chave, número e alertas", async () => {

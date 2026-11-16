@@ -19,7 +19,7 @@
 			"autorizador": "SP",
 			"ufs": ["35"],
 			"status": "https://homologacao.nfce.fazenda.sp.gov.br/ws/NFeStatusServico4.asmx",
-			"verificado": false
+			"verificado": true
 		},
 		{
 			"autorizador": "SVRS",

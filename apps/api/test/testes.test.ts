@@ -26,6 +26,8 @@ const transporte: Transport = {
 		let corpo: string;
 		if (/statusservico/i.test(request.url)) {
 			corpo = `<retConsStatServ><cStat>${governo.cStat}</cStat><xMotivo>${governo.cStat === "107" ? "Servico em Operacao" : "Servico Paralisado"}</xMotivo></retConsStatServ>`;
+		} else if (request.url.includes("parametros_municipais")) {
+			corpo = JSON.stringify({ parametrosConvenio: { aderenteEmissorNacional: 1 } });
 		} else if (governo.rejeitarNfse) {
 			status = 400;
 			corpo = JSON.stringify({ erros: [{ Codigo: "E0312", Descricao: "Código de tributação inválido" }] });
@@ -112,6 +114,7 @@ describe("testes de homologação no admin", () => {
 		expect(json.ambiente).toBe("homologacao");
 		expect(json.cenarios.map((c: Json) => c.id)).toEqual([
 			"cofre.conexao",
+			"nfse.convenio",
 			"nfse.emitir",
 			"nfe.status",
 			"nfe.emitir",
@@ -144,7 +147,7 @@ describe("testes de homologação no admin", () => {
 		// Nada saiu para endereços de produção.
 		const urls = governo.chamadas.map((c) => c.url);
 		expect(urls).toEqual([
-			"https://sefin.producaorestrita.nfse.gov.br/SefinNacional/nfse",
+			"https://sefin.producaorestrita.nfse.gov.br/API/SefinNacional/nfse",
 			"https://homologacao.nfe.fazenda.sp.gov.br/ws/nfestatusservico4.asmx",
 			"https://homologacao.nfce.fazenda.sp.gov.br/ws/NFeStatusServico4.asmx",
 		]);
