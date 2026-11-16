@@ -27,7 +27,9 @@ import {
 	secretIsStrong,
 } from "./crypto";
 import * as db from "./db";
+import { registrarTestes } from "./admin-testes";
 import { registrarNfse } from "./nfse";
+import { PAINEL_CSS, PAINEL_HTML, PAINEL_JS } from "./painel/page";
 import { API_VERSION } from "./versao";
 
 export { API_VERSION };
@@ -216,15 +218,29 @@ export function createApi(deps: ApiDeps = {}) {
 
 	// ---------- Público ----------
 
-	app.get("/", (c) =>
-		c.json({
+	app.get("/", (c) => {
+		// admin.nfapi.queven.app aponta para este mesmo Worker e abre o painel.
+		if (new URL(c.req.url).hostname.startsWith("admin.")) return c.redirect("/painel");
+		return c.json({
 			nome: "NFapi",
 			versao: API_VERSION,
 			documentacao: "https://nfapi.queven.app",
 			openapi: "/openapi.json",
-		}),
-	);
+		});
+	});
 	app.get("/health", (c) => c.json({ ok: true, versao: API_VERSION }));
+
+	// Painel de administração (admin.nfapi.queven.app). A página é pública e
+	// vazia de dados: tudo o que ela mostra vem das rotas /admin, com token.
+	const CSP =
+		"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
+	app.get("/painel", (c) => {
+		c.header("content-security-policy", CSP);
+		c.header("x-frame-options", "DENY");
+		return c.html(PAINEL_HTML);
+	});
+	app.get("/painel/app.js", (c) => c.body(PAINEL_JS, 200, { "content-type": "text/javascript; charset=utf-8" }));
+	app.get("/painel/app.css", (c) => c.body(PAINEL_CSS, 200, { "content-type": "text/css; charset=utf-8" }));
 
 	app.openapi(
 		createRoute({
@@ -250,10 +266,22 @@ export function createApi(deps: ApiDeps = {}) {
 		}
 		const header = c.req.header("authorization") ?? "";
 		const provided = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-		if (!provided || !(await safeEqual(provided, c.env.ADMIN_TOKEN))) {
-			return erro(c, 401, "nao_autenticado", "Token de administração incorreto.");
+		if (provided && (await safeEqual(provided, c.env.ADMIN_TOKEN))) {
+			c.set("origem", "admin");
+			return next();
 		}
-		await next();
+		// Token da IA: escopo restrito aos testes de homologação.
+		const somenteTestes = c.req.path === "/admin/testes" || c.req.path.startsWith("/admin/testes/");
+		if (
+			provided &&
+			somenteTestes &&
+			secretIsStrong(c.env.TESTES_TOKEN) &&
+			(await safeEqual(provided, c.env.TESTES_TOKEN))
+		) {
+			c.set("origem", "ia");
+			return next();
+		}
+		return erro(c, 401, "nao_autenticado", "Token de administração incorreto.");
 	});
 
 	app.use("/v1/*", async (c, next) => {
@@ -528,6 +556,7 @@ export function createApi(deps: ApiDeps = {}) {
 	// ---------- Documentos fiscais ----------
 
 	registrarNfse(app, { vaultFor });
+	registrarTestes(app, { vaultFor });
 
 	// ---------- OpenAPI ----------
 

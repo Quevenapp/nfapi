@@ -9,9 +9,17 @@ export interface ApiEnv {
 	DB: D1Database;
 	MASTER_KEY: string;
 	ADMIN_TOKEN: string;
+	/**
+	 * Opcional. Token de escopo reduzido para a IA: só consulta e executa os
+	 * testes de homologação, sem acesso ao restante da administração.
+	 */
+	TESTES_TOKEN?: string;
 }
 
-export type Ctx = { Bindings: ApiEnv; Variables: { account: db.Account } };
+export type Ctx = {
+	Bindings: ApiEnv;
+	Variables: { account: db.Account; origem: "admin" | "ia" };
+};
 export type C = Context<Ctx>;
 
 /** O que as rotas fiscais precisam das rotas de emitentes. */

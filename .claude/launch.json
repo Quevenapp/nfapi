@@ -6,6 +6,12 @@
 			"runtimeExecutable": "pnpm",
 			"runtimeArgs": ["--dir", "vault", "exec", "wrangler", "dev", "--enable-containers=false", "--port", "8787"],
 			"port": 8787
+		},
+		{
+			"name": "api",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": ["--dir", "apps/api", "exec", "wrangler", "dev", "--port", "8788"],
+			"port": 8788
 		}
 	]
 }

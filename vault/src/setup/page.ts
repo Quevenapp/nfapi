@@ -58,7 +58,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
 		<section class="card">
 			<h2>3. Conectar à API NFapi</h2>
-			<p>Gere um código de pareamento e cole-o no painel do NFapi. Ele autoriza a API a pedir assinaturas e transmissões a este cofre.</p>
+			<p>Gere um código de pareamento e envie-o à API do NFapi (<code>POST /v1/emitentes</code>). Ele autoriza a API a pedir assinaturas e transmissões a este cofre.</p>
 			<form id="pair-form">
 				<label for="pair-label">Nome desta conexão</label>
 				<input id="pair-label" type="text" maxlength="80" placeholder="API NFapi">

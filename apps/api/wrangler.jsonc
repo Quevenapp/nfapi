@@ -6,9 +6,14 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
-	"routes": [{ "pattern": "api.nfapi.queven.app", "custom_domain": true }],
+	// O painel de administração (/painel) é servido por este mesmo Worker.
+	"routes": [
+		{ "pattern": "api.nfapi.queven.app", "custom_domain": true },
+		{ "pattern": "admin.nfapi.queven.app", "custom_domain": true }
+	],
 
 	// MASTER_KEY cifra as chaves de pareamento dos cofres; ADMIN_TOKEN protege /admin.
+	// Opcional: TESTES_TOKEN, de escopo reduzido, para a IA executar os testes de homologação.
 	"secrets": { "required": ["MASTER_KEY", "ADMIN_TOKEN"] },
 
 	// Contas, chaves de API e emitentes. Nenhum XML fiscal é gravado aqui.

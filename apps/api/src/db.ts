@@ -198,6 +198,23 @@ export async function getEmitter(
 	return row ? toEmitter(row) : null;
 }
 
+/** Uso administrativo: emitentes de todas as contas, com o nome da conta. */
+export async function listAllEmitters(db: D1Database): Promise<(Emitter & { accountName: string })[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT e.*, a.name AS account_name FROM emitters e JOIN accounts a ON a.id = e.account_id
+			 ORDER BY e.created_at DESC`,
+		)
+		.all<Row>();
+	return results.map((r) => ({ ...toEmitter(r), accountName: r.account_name as string }));
+}
+
+/** Uso administrativo: localiza o emitente sem filtrar por conta. */
+export async function getEmitterById(db: D1Database, id: string): Promise<Emitter | null> {
+	const row = await db.prepare("SELECT * FROM emitters WHERE id = ?").bind(id).first<Row>();
+	return row ? toEmitter(row) : null;
+}
+
 export async function listEmitters(db: D1Database, accountId: string): Promise<Emitter[]> {
 	const { results } = await db
 		.prepare("SELECT * FROM emitters WHERE account_id = ? ORDER BY created_at DESC")

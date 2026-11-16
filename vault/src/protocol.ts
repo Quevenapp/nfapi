@@ -167,7 +167,7 @@ export async function verifySignature(
 
 // ---------- Código de pareamento ----------
 
-/** O que o emitente copia da tela /setup do cofre e cola no painel do NFapi. */
+/** O que o emitente copia da tela /setup do cofre e envia à API (POST /v1/emitentes). */
 export interface PairingCode {
 	v: 1;
 	url: string;

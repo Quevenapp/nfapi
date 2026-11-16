@@ -2,6 +2,7 @@
 // código. É a área que o monitor de IA pode atualizar sozinho quando os testes
 // passam (ver plano: "atualização por risco").
 
+import nfeStatus from "../data/nfe-status-homologacao.json";
 import nfse from "../data/nfse-nacional.json";
 
 export type Ambiente = "producao" | "homologacao";
@@ -26,4 +27,22 @@ export const NFSE_NACIONAL = nfse as {
 
 export function nfseAmbiente(ambiente: Ambiente): NfseAmbiente {
 	return NFSE_NACIONAL.ambientes[ambiente];
+}
+
+// ---------- NF-e / NFC-e: serviço de status em homologação (tabela parcial) ----------
+
+export interface AutorizadorStatus {
+	autorizador: string;
+	/** Códigos IBGE das UFs atendidas. */
+	ufs: string[];
+	status: string;
+	/** O endereço já respondeu em teste real com certificado A1? */
+	verificado: boolean;
+}
+
+const STATUS_HOMOLOGACAO = nfeStatus as unknown as Record<"nfe" | "nfce", AutorizadorStatus[]>;
+
+/** Quem atende a UF (código IBGE de 2 dígitos) no serviço de status de homologação. */
+export function statusHomologacao(modelo: "nfe" | "nfce", cUF: string): AutorizadorStatus | null {
+	return STATUS_HOMOLOGACAO[modelo].find((a) => a.ufs.includes(cUF)) ?? null;
 }

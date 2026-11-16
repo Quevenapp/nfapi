@@ -1,5 +1,7 @@
 # Gere cada valor com:  openssl rand -hex 32
 # MASTER_KEY cifra as chaves de pareamento dos cofres gravadas no D1.
 MASTER_KEY=
-# ADMIN_TOKEN dá acesso às rotas /admin (criar contas e chaves de API).
+# ADMIN_TOKEN dá acesso às rotas /admin (criar contas e chaves de API) e ao painel.
 ADMIN_TOKEN=
+# Opcional. Token de escopo reduzido para a IA: só consulta e executa os testes de homologação.
+TESTES_TOKEN=
