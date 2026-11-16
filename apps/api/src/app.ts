@@ -216,6 +216,74 @@ export function createApi(deps: ApiDeps = {}) {
 			timeoutMs: 20_000,
 		});
 
+	type Conexao =
+		| { ok: true; emitter: db.Emitter; novo: boolean }
+		| { ok: false; status: 400 | 422 | 502; codigo: string; mensagem: string };
+
+	/** Pareia um cofre com uma conta, a partir do código gerado na tela /setup dele. */
+	async function conectarEmitente(c: C, accountId: string, codigo: string): Promise<Conexao> {
+		let client: VaultClient;
+		let pairing: ReturnType<typeof decodePairingCode>;
+		try {
+			pairing = decodePairingCode(codigo);
+			client = VaultClient.fromPairingCode(pairing, { fetch: deps.vaultFetch, timeoutMs: 20_000 });
+		} catch (err) {
+			const mensagem = err instanceof VaultError ? err.message : "Código de pareamento inválido.";
+			return { ok: false, status: 400, codigo: "codigo_invalido", mensagem };
+		}
+
+		const { status, detail, health } = await inspectVault(client);
+		if (status === "inacessivel") return { ok: false, status: 502, codigo: "cofre_inacessivel", mensagem: detail };
+		const cert = health?.certificate;
+		if (status !== "ativo" || !health || !cert) return { ok: false, status: 422, codigo: status, mensagem: detail };
+
+		const existing = await db.findEmitterByDoc(c.env.DB, accountId, cert.holder.id);
+		const id = existing?.id ?? newId("emi");
+		const sealed = await seal(c.env.MASTER_KEY, id, fromHex(pairing.key));
+		const now = Date.now();
+		const emitter: db.Emitter = {
+			id,
+			accountId,
+			docKind: cert.holder.kind,
+			docId: cert.holder.id,
+			name: cert.commonName.split(":")[0]?.trim() || cert.commonName,
+			vaultUrl: client.origin,
+			pairingId: pairing.id,
+			pairingKeyIv: sealed.iv,
+			pairingKeyCt: sealed.ciphertext,
+			vaultVersion: health.version,
+			vaultProtocol: health.protocol,
+			allowProduction: health.allowProduction,
+			certIssuer: cert.issuer,
+			certNotAfter: Date.parse(cert.notAfter),
+			status: "ativo",
+			statusDetail: "",
+			checkedAt: now,
+			createdAt: existing?.createdAt ?? now,
+		};
+		await db.saveEmitter(c.env.DB, emitter);
+		return { ok: true, emitter, novo: !existing };
+	}
+
+	/** Consulta o cofre agora e grava a situação atual do emitente. */
+	async function verificarEmitente(c: C, emitter: db.Emitter): Promise<db.Emitter> {
+		const { status, detail, health } = await inspectVault(await vaultFor(c, emitter), emitter.docId);
+		const cert = health?.certificate?.holder.id === emitter.docId ? health.certificate : undefined;
+		const updated: db.Emitter = {
+			...emitter,
+			status,
+			statusDetail: detail,
+			checkedAt: Date.now(),
+			vaultVersion: health?.version ?? emitter.vaultVersion,
+			vaultProtocol: health?.protocol ?? emitter.vaultProtocol,
+			allowProduction: health?.allowProduction ?? emitter.allowProduction,
+			certIssuer: cert?.issuer ?? emitter.certIssuer,
+			certNotAfter: cert ? Date.parse(cert.notAfter) : emitter.certNotAfter,
+		};
+		await db.saveEmitter(c.env.DB, updated);
+		return updated;
+	}
+
 	// ---------- Público ----------
 
 	app.get("/", (c) => {
@@ -355,6 +423,47 @@ export function createApi(deps: ApiDeps = {}) {
 		return c.json({ ok: true });
 	});
 
+	// Detalhe de uma conta: chaves (sem o valor) e emitentes conectados.
+	app.get("/admin/contas/:id", async (c) => {
+		const account = await db.getAccount(c.env.DB, c.req.param("id"));
+		if (!account) return erro(c, 404, "nao_encontrado", "Conta inexistente.");
+		const [chaves, emitentes] = await Promise.all([
+			db.listApiKeys(c.env.DB, account.id),
+			db.listEmitters(c.env.DB, account.id),
+		]);
+		return c.json({
+			conta: contaJson(account),
+			chaves: chaves.map(chaveJson),
+			emitentes: emitentes.map(emitenteJson),
+		});
+	});
+
+	// O administrador conecta o cofre em nome da conta (o painel do usuário não existe).
+	app.post("/admin/contas/:id/emitentes", async (c) => {
+		const account = await db.getAccount(c.env.DB, c.req.param("id"));
+		if (!account) return erro(c, 404, "nao_encontrado", "Conta inexistente.");
+		const input = (await c.req.json().catch(() => null)) as { codigoPareamento?: unknown } | null;
+		if (typeof input?.codigoPareamento !== "string" || input.codigoPareamento.length < 20) {
+			return erro(c, 400, "requisicao_invalida", "Informe o código de pareamento gerado no cofre.");
+		}
+		const r = await conectarEmitente(c, account.id, input.codigoPareamento);
+		if (!r.ok) return erro(c, r.status, r.codigo, r.mensagem);
+		return c.json({ emitente: emitenteJson(r.emitter) }, r.novo ? 201 : 200);
+	});
+
+	app.post("/admin/emitentes/:id/verificar", async (c) => {
+		const emitter = await db.getEmitterById(c.env.DB, c.req.param("id"));
+		if (!emitter) return erro(c, 404, "nao_encontrado", "Emitente inexistente.");
+		return c.json({ emitente: emitenteJson(await verificarEmitente(c, emitter)) });
+	});
+
+	app.delete("/admin/emitentes/:id", async (c) => {
+		const emitter = await db.getEmitterById(c.env.DB, c.req.param("id"));
+		if (!emitter) return erro(c, 404, "nao_encontrado", "Emitente inexistente.");
+		await db.deleteEmitter(c.env.DB, emitter.accountId, emitter.id);
+		return c.json({ ok: true });
+	});
+
 	// ---------- Conta ----------
 
 	app.openapi(
@@ -433,48 +542,9 @@ export function createApi(deps: ApiDeps = {}) {
 			},
 		}),
 		async (c) => {
-			const account = c.get("account");
-			let client: VaultClient;
-			let pairing: ReturnType<typeof decodePairingCode>;
-			try {
-				pairing = decodePairingCode(c.req.valid("json").codigoPareamento);
-				client = VaultClient.fromPairingCode(pairing, { fetch: deps.vaultFetch, timeoutMs: 20_000 });
-			} catch (err) {
-				const mensagem = err instanceof VaultError ? err.message : "Código de pareamento inválido.";
-				return erro(c, 400, "codigo_invalido", mensagem);
-			}
-
-			const { status, detail, health } = await inspectVault(client);
-			if (status === "inacessivel") return erro(c, 502, "cofre_inacessivel", detail);
-			const cert = health?.certificate;
-			if (status !== "ativo" || !health || !cert) return erro(c, 422, status, detail);
-
-			const existing = await db.findEmitterByDoc(c.env.DB, account.id, cert.holder.id);
-			const id = existing?.id ?? newId("emi");
-			const sealed = await seal(c.env.MASTER_KEY, id, fromHex(pairing.key));
-			const now = Date.now();
-			const emitter: db.Emitter = {
-				id,
-				accountId: account.id,
-				docKind: cert.holder.kind,
-				docId: cert.holder.id,
-				name: cert.commonName.split(":")[0]?.trim() || cert.commonName,
-				vaultUrl: client.origin,
-				pairingId: pairing.id,
-				pairingKeyIv: sealed.iv,
-				pairingKeyCt: sealed.ciphertext,
-				vaultVersion: health.version,
-				vaultProtocol: health.protocol,
-				allowProduction: health.allowProduction,
-				certIssuer: cert.issuer,
-				certNotAfter: Date.parse(cert.notAfter),
-				status: "ativo",
-				statusDetail: "",
-				checkedAt: now,
-				createdAt: existing?.createdAt ?? now,
-			};
-			await db.saveEmitter(c.env.DB, emitter);
-			return c.json(emitenteJson(emitter), existing ? 200 : 201);
+			const r = await conectarEmitente(c, c.get("account").id, c.req.valid("json").codigoPareamento);
+			if (!r.ok) return erro(c, r.status, r.codigo, r.mensagem);
+			return c.json(emitenteJson(r.emitter), r.novo ? 201 : 200);
 		},
 	);
 
@@ -510,22 +580,7 @@ export function createApi(deps: ApiDeps = {}) {
 		async (c) => {
 			const emitter = await db.getEmitter(c.env.DB, c.get("account").id, c.req.valid("param").id);
 			if (!emitter) return erro(c, 404, "nao_encontrado", "Emitente inexistente nesta conta.");
-
-			const { status, detail, health } = await inspectVault(await vaultFor(c, emitter), emitter.docId);
-			const cert = health?.certificate?.holder.id === emitter.docId ? health.certificate : undefined;
-			const updated: db.Emitter = {
-				...emitter,
-				status,
-				statusDetail: detail,
-				checkedAt: Date.now(),
-				vaultVersion: health?.version ?? emitter.vaultVersion,
-				vaultProtocol: health?.protocol ?? emitter.vaultProtocol,
-				allowProduction: health?.allowProduction ?? emitter.allowProduction,
-				certIssuer: cert?.issuer ?? emitter.certIssuer,
-				certNotAfter: cert ? Date.parse(cert.notAfter) : emitter.certNotAfter,
-			};
-			await db.saveEmitter(c.env.DB, updated);
-			return c.json(emitenteJson(updated), 200);
+			return c.json(emitenteJson(await verificarEmitente(c, emitter)), 200);
 		},
 	);
 

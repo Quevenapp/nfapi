@@ -31,6 +31,52 @@ export const PAINEL_HTML = String.raw`<!doctype html>
 
 	<div id="panel" hidden>
 		<section class="card">
+			<h2>Contas e cofres</h2>
+			<p class="muted small">Cada conta tem suas chaves de API e seus emitentes (cofres pareados).</p>
+
+			<label for="account">Conta</label>
+			<select id="account"></select>
+			<p id="no-accounts" class="warn" hidden>Nenhuma conta ainda. Crie a primeira abaixo.</p>
+
+			<div id="account-detail" hidden>
+				<h3>Chaves de API</h3>
+				<ul id="keys" class="results"></ul>
+				<button type="button" id="key-new" class="ghost">Gerar nova chave</button>
+
+				<h3>Cofres conectados</h3>
+				<ul id="vaults" class="results"></ul>
+				<form id="pair-form">
+					<label for="pair-code">Código de pareamento (gerado na tela /setup do cofre)</label>
+					<textarea id="pair-code" rows="3" placeholder="nfapi-cofre-v1...." required></textarea>
+					<button type="submit">Conectar cofre</button>
+					<span id="pair-message" role="status"></span>
+				</form>
+			</div>
+
+			<div id="key-box" hidden>
+				<p class="warn">Copie agora: a chave de API aparece uma única vez.</p>
+				<textarea id="key-value" readonly rows="2"></textarea>
+				<button type="button" id="key-copy" class="ghost">Copiar chave</button>
+			</div>
+
+			<h3>Nova conta</h3>
+			<form id="account-form">
+				<div class="grid">
+					<div>
+						<label for="a-nome">Nome</label>
+						<input id="a-nome" type="text" minlength="2" maxlength="120" required>
+					</div>
+					<div>
+						<label for="a-email">E-mail</label>
+						<input id="a-email" type="email" maxlength="200" required>
+					</div>
+				</div>
+				<button type="submit" class="ghost">Criar conta</button>
+				<span id="account-message" role="status"></span>
+			</form>
+		</section>
+
+		<section class="card">
 			<h2>Emitente de teste</h2>
 			<p class="muted small">Os testes usam o certificado instalado no cofre deste emitente e rodam <strong>somente em homologação</strong>.</p>
 			<p id="no-emitters" class="warn" hidden>Nenhum emitente conectado. Conecte um cofre pela API (POST /v1/emitentes) para poder testar.</p>
@@ -131,10 +177,15 @@ p { margin: 0 0 12px; }
 .bad { color: var(--bad); }
 .warn { color: var(--warn); font-weight: 600; }
 label { display: block; font-weight: 600; font-size: 0.9rem; margin: 12px 0 4px; }
-input[type="text"], input[type="password"], select {
+input[type="text"], input[type="password"], input[type="email"], select, textarea {
 	width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
 	background: var(--bg); color: var(--text); font: inherit;
 }
+textarea { font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; word-break: break-all; resize: vertical; }
+.results li.line { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.results li.line .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.results li.line button { margin-top: 0; padding: 6px 12px; }
+button.danger { border-color: var(--bad); color: var(--bad); }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0 16px; }
 button {
 	margin-top: 14px; padding: 10px 16px; border: 1px solid var(--accent); border-radius: 8px;
@@ -309,12 +360,150 @@ export const PAINEL_JS = String.raw`(function () {
 		await renderHistory();
 	}
 
+	// ---------- Contas e cofres ----------
+
+	function showKey(chave) {
+		$("key-value").value = chave.chave;
+		$("key-box").hidden = false;
+		$("key-copy").textContent = "Copiar chave";
+	}
+
+	function line(title, detail, buttons) {
+		var info = el("span", {}, [el("strong", { text: title }), el("span", { class: "detail", text: detail })]);
+		return el("li", { class: "line" }, [info, el("span", { class: "acts" }, buttons)]);
+	}
+
+	function action(text, danger, handler) {
+		var button = el("button", { type: "button", class: danger ? "ghost danger" : "ghost", text: text });
+		button.addEventListener("click", function () { busy(button, handler).catch(function (err) { alert(err.message); }); });
+		return button;
+	}
+
+	async function loadAccount() {
+		var id = $("account").value;
+		$("account-detail").hidden = !id;
+		if (!id) return;
+		var data = await api("GET", "/admin/contas/" + id);
+
+		var keys = $("keys");
+		clear(keys);
+		data.chaves.forEach(function (k) {
+			var detail = k.prefixo + "… · criada em " + date(k.criadaEm) +
+				(k.revogadaEm ? " · revogada em " + date(k.revogadaEm) : (k.ultimoUso ? " · último uso " + date(k.ultimoUso) : " · nunca usada"));
+			keys.appendChild(line(k.nome, detail, k.revogadaEm ? [] : [
+				action("Revogar", true, async function () {
+					if (!confirm("Revogar a chave \"" + k.nome + "\"? Quem a usa perde o acesso na hora.")) return;
+					await api("DELETE", "/admin/chaves/" + k.id);
+					await loadAccount();
+				})
+			]));
+		});
+
+		var vaults = $("vaults");
+		clear(vaults);
+		if (!data.emitentes.length) vaults.appendChild(el("li", { class: "muted", text: "Nenhum cofre conectado a esta conta." }));
+		data.emitentes.forEach(function (e) {
+			var detail = e.documento.tipo.toUpperCase() + " " + e.documento.numero + " · " + e.cofre.situacao +
+				(e.cofre.detalhe ? " (" + e.cofre.detalhe + ")" : "") +
+				" · " + (e.cofre.producaoLiberada ? "produção liberada" : "produção bloqueada") +
+				" · certificado até " + date(e.certificado.validoAte);
+			vaults.appendChild(line(e.nome, detail, [
+				action("Verificar", false, async function () {
+					await api("POST", "/admin/emitentes/" + e.id + "/verificar");
+					await loadAccount();
+					await refresh(true);
+				}),
+				action("Desconectar", true, async function () {
+					if (!confirm("Desconectar o cofre de \"" + e.nome + "\"? O certificado e os XML continuam no cofre.")) return;
+					await api("DELETE", "/admin/emitentes/" + e.id);
+					await loadAccount();
+					await refresh(false);
+				})
+			]));
+		});
+	}
+
+	async function loadAccounts(selected) {
+		var data = await api("GET", "/admin/contas");
+		var select = $("account");
+		var keep = selected || select.value;
+		clear(select);
+		data.contas.forEach(function (a) {
+			select.appendChild(el("option", { value: a.id, text: a.nome + " — " + a.email }));
+		});
+		if (keep) select.value = keep;
+		$("no-accounts").hidden = data.contas.length > 0;
+		select.hidden = data.contas.length === 0;
+		await loadAccount();
+	}
+
+	$("account").addEventListener("change", function () {
+		$("key-box").hidden = true;
+		loadAccount();
+	});
+
+	$("account-form").addEventListener("submit", async function (ev) {
+		ev.preventDefault();
+		message("account-message", "");
+		try {
+			var data = await busy(ev.submitter, function () {
+				return api("POST", "/admin/contas", { nome: $("a-nome").value, email: $("a-email").value });
+			});
+			$("a-nome").value = "";
+			$("a-email").value = "";
+			await loadAccounts(data.conta.id);
+			showKey(data.chave);
+			message("account-message", "Conta criada.", "ok");
+		} catch (err) {
+			message("account-message", err.message, "bad");
+		}
+	});
+
+	$("key-new").addEventListener("click", async function (ev) {
+		try {
+			var data = await busy(ev.currentTarget, function () {
+				return api("POST", "/admin/contas/" + $("account").value + "/chaves", { nome: "Chave criada em " + new Date().toLocaleDateString("pt-BR") });
+			});
+			await loadAccount();
+			showKey(data.chave);
+		} catch (err) {
+			alert(err.message);
+		}
+	});
+
+	$("key-copy").addEventListener("click", async function () {
+		$("key-value").select();
+		try {
+			await navigator.clipboard.writeText($("key-value").value);
+			$("key-copy").textContent = "Copiada";
+		} catch (e) {
+			document.execCommand("copy");
+		}
+	});
+
+	$("pair-form").addEventListener("submit", async function (ev) {
+		ev.preventDefault();
+		message("pair-message", "Consultando o cofre…");
+		try {
+			await busy(ev.submitter, function () {
+				return api("POST", "/admin/contas/" + $("account").value + "/emitentes", { codigoPareamento: $("pair-code").value.trim() });
+			});
+			$("pair-code").value = "";
+			message("pair-message", "Cofre conectado.", "ok");
+			await loadAccount();
+			await refresh(false);
+		} catch (err) {
+			message("pair-message", err.message, "bad");
+		}
+	});
+
 	$("login-form").addEventListener("submit", async function (ev) {
 		ev.preventDefault();
 		token = $("token").value.trim();
 		message("login-error", "");
 		try {
 			await refresh(false);
+			await loadAccounts();
 			$("token").value = "";
 			$("login").hidden = true;
 			$("panel").hidden = false;

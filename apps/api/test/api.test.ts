@@ -247,3 +247,59 @@ describe("emitentes", () => {
 		expect((await call("GET", `/v1/emitentes/${emitente.id}`, dona.chave)).status).toBe(404);
 	});
 });
+
+describe("administração de contas e cofres (painel)", () => {
+	it("o administrador conecta o cofre em nome da conta e gerencia o emitente", async () => {
+		const { contaId, chave } = await criarConta();
+		await instalarCertificadoNoCofre();
+		const { code } = await gerarCodigoDePareamento();
+		const corpo = { codigoPareamento: code };
+
+		// Só o token de administração; a chave de API da conta não serve em /admin.
+		expect((await call("POST", `/admin/contas/${contaId}/emitentes`, undefined, corpo)).status).toBe(401);
+		expect((await call("POST", `/admin/contas/${contaId}/emitentes`, chave, corpo)).status).toBe(401);
+
+		const conectado = await call("POST", `/admin/contas/${contaId}/emitentes`, env.ADMIN_TOKEN, corpo);
+		expect(conectado.status).toBe(201);
+		expect(conectado.json.emitente).toMatchObject({
+			documento: { tipo: "cnpj", numero: CNPJ_TESTE },
+			cofre: { url: COFRE, situacao: "ativo" },
+		});
+		const id = conectado.json.emitente.id as string;
+
+		const detalhe = await call("GET", `/admin/contas/${contaId}`, env.ADMIN_TOKEN);
+		expect(detalhe.json.chaves).toHaveLength(1);
+		expect(detalhe.json.emitentes.map((e: Json) => e.id)).toEqual([id]);
+		// O detalhe nunca devolve o valor da chave de API.
+		expect(JSON.stringify(detalhe.json)).not.toContain(chave);
+
+		// O emitente conectado pelo admin é o mesmo que a conta enxerga pela API.
+		expect((await call("GET", "/v1/emitentes", chave)).json.emitentes.map((e: Json) => e.id)).toEqual([id]);
+
+		const verificado = await call("POST", `/admin/emitentes/${id}/verificar`, env.ADMIN_TOKEN);
+		expect(verificado.json.emitente.cofre.situacao).toBe("ativo");
+
+		expect((await call("DELETE", `/admin/emitentes/${id}`, env.ADMIN_TOKEN)).status).toBe(200);
+		expect((await call("GET", `/admin/contas/${contaId}`, env.ADMIN_TOKEN)).json.emitentes).toHaveLength(0);
+		expect((await call("DELETE", `/admin/emitentes/${id}`, env.ADMIN_TOKEN)).status).toBe(404);
+	});
+
+	it("explica falhas de conexão e recusa contas inexistentes", async () => {
+		const { contaId } = await criarConta();
+		const rota = `/admin/contas/${contaId}/emitentes`;
+
+		expect((await call("POST", rota, env.ADMIN_TOKEN, {})).status).toBe(400);
+		const invalido = await call("POST", rota, env.ADMIN_TOKEN, { codigoPareamento: "isto-nao-e-um-codigo-valido" });
+		expect(invalido.json.erro.codigo).toBe("codigo_invalido");
+
+		// Cofre sem certificado: o erro diz o que falta fazer.
+		const { code } = await gerarCodigoDePareamento();
+		const semCert = await call("POST", rota, env.ADMIN_TOKEN, { codigoPareamento: code });
+		expect(semCert.status).toBe(422);
+		expect(semCert.json.erro.codigo).toBe("sem_certificado");
+
+		const outraConta = `/admin/contas/cta_${"0".repeat(20)}`;
+		expect((await call("GET", outraConta, env.ADMIN_TOKEN)).status).toBe(404);
+		expect((await call("POST", `${outraConta}/emitentes`, env.ADMIN_TOKEN, { codigoPareamento: code })).status).toBe(404);
+	});
+});
