@@ -40,6 +40,8 @@ z.config(z.locales.ptBR());
 const MAX_PFX_BYTES = 64 * 1024;
 
 function fail(c: C, status: Status, code: string, message: string) {
+	// A API dos sistemas clientes (/v1) responde sempre no formato do contrato.
+	if (c.req.path.startsWith("/v1/")) return c.json({ erro: { codigo: code, mensagem: message } }, status);
 	return c.json({ error: { code, message } }, status);
 }
 

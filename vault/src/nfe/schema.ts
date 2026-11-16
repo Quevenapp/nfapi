@@ -256,11 +256,19 @@ const Transporte = z.object({
 });
 
 const Comum = {
-	/** Série cadastrada no cofre. Pode ser omitida quando só há uma para o modelo e o ambiente. */
-	serie: z.number().int().min(0).max(889).optional(),
+	serie: z
+		.number()
+		.int()
+		.min(0)
+		.max(889)
+		.optional()
+		.describe("Série cadastrada no cofre. Pode ser omitida quando só há uma para o modelo e o ambiente."),
 	naturezaOperacao: texto(60),
-	/** Padrão: agora, no fuso da UF do emitente. */
-	dataEmissao: dataHora.optional(),
+	dataEmissao: dataHora
+		.optional()
+		.describe(
+			"Prefira omitir: o cofre usa a hora da emissão, no fuso da UF. Se for informada, entra na comparação de conteúdo da referência, e uma NFC-e com data antiga é rejeitada pela SEFAZ.",
+		),
 	/** normal (1), complementar (2), ajuste (3), devolucao (4). */
 	finalidade: z.enum(["normal", "complementar", "ajuste", "devolucao"]).default("normal"),
 	/** Chaves das notas referenciadas (obrigatório em devolução e complementar). */

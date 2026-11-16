@@ -321,14 +321,15 @@ export async function findByAccessKey(db: D1Database, accessKey: string): Promis
 export async function listEmissions(
 	db: D1Database,
 	limit: number,
-	filtro: { kind?: Kind; reference?: string } = {},
+	filtro: { kind?: Kind; reference?: string; environment?: Ambiente } = {},
 ): Promise<Emission[]> {
 	const { results } = await db
 		.prepare(
 			`SELECT * FROM emissions WHERE (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR reference = ?2)
+			 AND (?4 IS NULL OR environment = ?4)
 			 ORDER BY created_at DESC, rowid DESC LIMIT ?3`,
 		)
-		.bind(filtro.kind ?? null, filtro.reference ?? null, Math.min(Math.max(limit, 1), 200))
+		.bind(filtro.kind ?? null, filtro.reference ?? null, Math.min(Math.max(limit, 1), 200), filtro.environment ?? null)
 		.all<Row>();
 	return results.map(toEmission);
 }

@@ -53,7 +53,11 @@ async function instalarCertificado(senha = SENHA_TESTE) {
 	return admin("/admin/certificate", { method: "POST", body: form });
 }
 
-const erro = async (res: Response) => ((await res.json()) as { error: { code: string } }).error.code;
+/** Código do erro: o painel (/admin) responde `error.code`; a API dos clientes (/v1), `erro.codigo`. */
+const erro = async (res: Response) => {
+	const corpo = (await res.json()) as { error?: { code: string }; erro?: { codigo: string } };
+	return corpo.error?.code ?? corpo.erro?.codigo;
+};
 
 const NFE = (tpAmb: 1 | 2, cnpj = CNPJ_TESTE) =>
 	`<NFe xmlns="http://www.portalfiscal.inf.br/nfe"><infNFe Id="NFe35261111222333000181550010000000011000000015" versao="4.00">` +
@@ -95,6 +99,11 @@ describe("acesso", () => {
 			expect(res.status).toBe(503);
 			expect(await erro(res)).toBe("cofre_nao_configurado");
 		}
+		// Na API dos clientes, até os erros gerais seguem o formato do contrato.
+		const v1 = (await (await app.request(`${ORIGIN}/v1/nfse`, init, fraco)).json()) as Record<string, unknown>;
+		expect(Object.keys(v1)).toEqual(["erro"]);
+		const rotaInexistente = await app.request(`${ORIGIN}/v1/nao-existe`, {}, env);
+		expect(await rotaInexistente.json()).toEqual({ erro: { codigo: "nao_encontrado", mensagem: "Rota inexistente." } });
 	});
 
 	it("não tem mais as rotas da integração com a API central", async () => {

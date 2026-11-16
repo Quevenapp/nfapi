@@ -114,10 +114,68 @@ const EmissaoNfse = {
 
 const id = { name: "id", in: "path", required: true, schema: texto, description: "Id da emissão no cofre." };
 const filtros = [
-	{ name: "referencia", in: "query", schema: texto, description: "Pesquisa pela referência do seu sistema." },
+	{ name: "referencia", in: "query", schema: texto, description: "Pesquisa pela referência do seu sistema. A referência é única por ambiente: combine com `ambiente`." },
+	{ name: "ambiente", in: "query", schema: AMBIENTE, description: "Só as emissões deste ambiente. Sem o filtro, vêm as dos dois." },
 	{ name: "limite", in: "query", schema: { type: "integer", default: 50, maximum: 200 } },
 ];
 const xml = { description: "XML autorizado.", content: { "application/xml": { schema: texto } } };
+
+/** Resposta de cancelamento e de carta de correção: a emissão e se o pedido era repetido. */
+const comRepetido = (emissao: Json) => ({
+	allOf: [
+		emissao,
+		{
+			type: "object",
+			properties: {
+				repetido: {
+					type: "boolean",
+					description: "true quando o evento já estava registrado e nada novo foi enviado ao governo. Use para não lançar o efeito duas vezes.",
+				},
+			},
+			required: ["repetido"],
+		},
+	],
+});
+
+/**
+ * Códigos de `erro.codigo` da API. A lista cresce com as versões: trate um
+ * código desconhecido pelo status HTTP. Um teste confere que todo código
+ * usado no cofre está aqui.
+ */
+export const CODIGOS_DE_ERRO: Record<string, { status: number; quando: string }> = {
+	requisicao_invalida: { status: 400, quando: "O corpo ou um parâmetro não passou na validação; `mensagem` (e `campo`, na NF-e e NFC-e) aponta onde." },
+	nao_autenticado: { status: 401, quando: "Chave de API ausente, inválida ou revogada." },
+	chave_somente_homologacao: { status: 403, quando: "A chave é de teste e o pedido é de produção." },
+	nao_encontrado: { status: 404, quando: "Emissão, XML ou rota inexistente." },
+	certificado_ausente: { status: 409, quando: "Não há certificado instalado no cofre." },
+	certificado_vencido: { status: 409, quando: "O certificado instalado venceu." },
+	emissao_em_andamento: { status: 409, quando: "Já há um pedido com a mesma referência em andamento. Aguarde e consulte." },
+	referencia_com_conteudo_diferente: { status: 409, quando: "A referência já foi usada com outro conteúdo. Não repita: é um documento novo ou um erro do chamador." },
+	numero_ja_utilizado: { status: 409, quando: "NFS-e: o número informado no pedido já foi usado na série." },
+	nfe_nao_autorizada: { status: 409, quando: "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada." },
+	nfse_nao_autorizada: { status: 409, quando: "Cancelamento de NFS-e que não está autorizada." },
+	faixa_em_uso: { status: 409, quando: "Inutilização de faixa que contém nota autorizada ou em andamento." },
+	serie_nao_cadastrada: { status: 422, quando: "A série do pedido não está cadastrada no cofre para o modelo e o ambiente." },
+	serie_obrigatoria: { status: 422, quando: "Há mais de uma série cadastrada e o pedido não disse qual." },
+	uf_nao_suportada: { status: 422, quando: "O cofre ainda não tem autorizador para a UF do emitente." },
+	emitente_divergente: { status: 422, quando: "O emitente não é o titular do certificado nem uma filial de mesma raiz de CNPJ." },
+	producao_bloqueada: { status: 422, quando: "O pedido é de produção e o emitente não liberou a produção no cofre." },
+	nfe_rejeitada: { status: 422, quando: "A SEFAZ rejeitou a nota; `mensagens` traz cStat e xMotivo. Corrija e reenvie, com a mesma referência se quiser." },
+	nfe_denegada: { status: 422, quando: "A SEFAZ denegou o uso da nota. O número fica consumido." },
+	nfse_rejeitada: { status: 422, quando: "A SEFIN rejeitou a NFS-e; `mensagens` traz os códigos." },
+	cancelamento_rejeitado: { status: 422, quando: "O governo rejeitou o cancelamento (por exemplo, fora do prazo)." },
+	carta_rejeitada: { status: 422, quando: "A SEFAZ rejeitou a carta de correção." },
+	carta_nao_se_aplica: { status: 422, quando: "Carta de correção pedida para documento que não é NF-e." },
+	limite_de_cartas: { status: 422, quando: "A nota já tem 20 cartas de correção." },
+	inutilizacao_rejeitada: { status: 422, quando: "A SEFAZ rejeitou a inutilização." },
+	inutilizacao_extinta: { status: 422, quando: "A UF não tem mais inutilização de numeração (SP, AC e BA)." },
+	host_nao_permitido: { status: 422, quando: "Falha interna: o cofre recusou transmitir para um endereço que não é do governo." },
+	certificado_do_cliente_invalido: { status: 422, quando: "O governo recusou o certificado na conexão." },
+	sem_resposta_conclusiva: { status: 502, quando: "A resposta do governo se perdeu ou não foi conclusiva. Na NF-e e NFC-e, chame /consultar; em qualquer documento, repetir com a mesma referência consulta antes de reenviar." },
+	sem_conexao: { status: 200, quando: "Só em GET /v1/sefaz/status, dentro de `mensagem.codigo`: não foi possível falar com a SEFAZ." },
+	erro_interno: { status: 500, quando: "Falha inesperada do cofre." },
+	cofre_nao_configurado: { status: 503, quando: "O segredo do cofre está ausente ou é fraco demais: a instalação não foi concluída." },
+};
 
 /** Rotas de NF-e ou de NFC-e: os dois modelos têm o mesmo desenho. */
 function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: unknown): Json {
@@ -158,7 +216,7 @@ function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: un
 				description: "Repetir o pedido de uma nota já cancelada devolve 200.",
 				parameters: [id],
 				requestBody: corpo(ref("CancelamentoNfe"), { justificativa: "Pedido cancelado pelo cliente antes da entrega" }),
-				responses: { "200": resposta("Cancelada.", emissao), ...erros(400, 401, 403, 404, 409, 422, 502) },
+				responses: { "200": resposta("Cancelada, agora ou antes (`repetido`).", comRepetido(emissao)), ...erros(400, 401, 403, 404, 409, 422, 502) },
 			},
 		},
 	};
@@ -170,7 +228,7 @@ function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: un
 				description: "Até 20 por nota. A carta mais recente substitui as anteriores, então o texto deve trazer todas as correções.",
 				parameters: [id],
 				requestBody: corpo(ref("CartaCorrecao"), { correcao: "Endereço de entrega: Rua das Acácias, 45, sala 2" }),
-				responses: { "200": resposta("Registrada.", emissao), ...erros(400, 401, 403, 404, 409, 422, 502) },
+				responses: { "200": resposta("Registrada.", comRepetido(emissao)), ...erros(400, 401, 403, 404, 409, 422, 502) },
 			},
 		};
 	}
@@ -214,15 +272,15 @@ export function contratoOpenApi(): Json {
 					summary: "Cancela a NFS-e",
 					parameters: [id],
 					requestBody: corpo(ref("CancelamentoNfse"), { motivo: "erro_emissao", justificativa: "Nota emitida com o valor incorreto" }),
-					responses: { "200": resposta("Cancelada.", nfse), ...erros(400, 401, 403, 404, 409, 422, 502) },
+					responses: { "200": resposta("Cancelada, agora ou antes (`repetido`).", comRepetido(nfse)), ...erros(400, 401, 403, 404, 409, 422, 502) },
 				},
 			},
 			"/v1/inutilizacoes": {
 				post: {
 					tags: ["Numeração"],
 					summary: "Inutiliza uma faixa de numeração de NF-e ou NFC-e",
-					description: "Para números que não serão usados (lacunas). A faixa não pode conter nota autorizada ou em andamento neste cofre.",
-					requestBody: corpo(ref("Inutilizacao"), { modelo: "nfe", ambiente: "homologacao", uf: "SP", serie: 1, numeroInicial: 15, numeroFinal: 15, justificativa: "Número pulado por falha no sistema anterior" }),
+					description: "Para números que não serão usados (lacunas). A faixa não pode conter nota autorizada ou em andamento neste cofre. Em SP, AC e BA a inutilização foi extinta: o cofre responde 422 inutilizacao_extinta.",
+					requestBody: corpo(ref("Inutilizacao"), { modelo: "nfe", ambiente: "homologacao", uf: "RJ", serie: 1, numeroInicial: 15, numeroFinal: 15, justificativa: "Número pulado por falha no sistema anterior" }),
 					responses: { "201": resposta("Homologada pela SEFAZ.", ref("InutilizacaoRegistrada")), ...erros(400, 401, 403, 409, 422, 502) },
 				},
 			},
@@ -262,7 +320,18 @@ export function contratoOpenApi(): Json {
 				Erro: {
 					type: "object",
 					properties: {
-						erro: { type: "object", properties: { codigo: texto, mensagem: texto }, required: ["codigo", "mensagem"] },
+						erro: {
+							type: "object",
+							properties: {
+								codigo: {
+									type: "string",
+									description: "Código estável do erro; a tabela está em `x-codigos`. Novos códigos podem surgir em versões novas: trate um código desconhecido pelo status HTTP.",
+									"x-codigos": CODIGOS_DE_ERRO,
+								},
+								mensagem: texto,
+							},
+							required: ["codigo", "mensagem"],
+						},
 						campo: { ...textoOuNulo, description: "Em erros de validação da NF-e e NFC-e: o campo recusado." },
 						nfe: ref("EmissaoNfe"),
 						nfce: ref("EmissaoNfe"),

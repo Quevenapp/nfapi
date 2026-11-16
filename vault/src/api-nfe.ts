@@ -17,7 +17,7 @@
 
 import type { Context, Hono } from "hono";
 import { z } from "zod";
-import { autenticar, erro, iso, operacoes, problema } from "./api-nfse";
+import { ambienteDoFiltro, autenticar, erro, iso, operacoes, problema } from "./api-nfse";
 import type { AppEnv, Ctx } from "./app";
 import { estadoDaAtualizacao } from "./atualizacao";
 import { contratoOpenApi } from "./contrato";
@@ -126,9 +126,12 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 			const chave = await autenticar(c);
 			if (chave instanceof Response) return chave;
 			const limite = Number(c.req.query("limite") ?? 50);
+			const ambiente = ambienteDoFiltro(c);
+			if (ambiente === null) return erro(c, 400, "requisicao_invalida", 'O filtro "ambiente" aceita homologacao ou producao.');
 			const lista = await banco.listEmissions(c.env.DB, Number.isFinite(limite) ? limite : 50, {
 				kind: doc,
 				reference: c.req.query("referencia") || undefined,
+				environment: ambiente,
 			});
 			return c.json({ [doc]: lista.map(nfeJson) });
 		});
@@ -174,7 +177,8 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 				if (ops instanceof Response) return ops;
 				const r = await executar(c.env.DB, ops, emission, input.data as never);
 				if (!r.ok) return erro(c, r.status, r.codigo, r.mensagem, { mensagens: r.mensagens });
-				return c.json(nfeJson(r.emission));
+				// `repetido`: o evento já estava registrado e nada novo foi enviado à SEFAZ.
+				return c.json({ ...nfeJson(r.emission), repetido: r.repetido });
 			});
 		evento("cancelar", CancelamentoNfe, cancelarNfe);
 		if (doc === "nfe") evento("carta-correcao", CartaCorrecao, corrigirNfe);

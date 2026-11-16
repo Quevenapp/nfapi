@@ -141,6 +141,10 @@ describe("NF-e pelo cofre", () => {
 		const nota = (await admin("GET", "/admin/notas")).json.notas[0];
 		expect(nota).toMatchObject({ modelo: "nfe", chaveAcesso: json.chaveAcesso, numeroNfse: "100", serie: "1", valor: 700, situacao: "autorizada" });
 		expect((await cliente("GET", "/v1/nfe?referencia=pedido-1001")).json.nfe).toHaveLength(1);
+		// A referência é única por ambiente: a pesquisa aceita o filtro.
+		expect((await cliente("GET", "/v1/nfe?referencia=pedido-1001&ambiente=homologacao")).json.nfe).toHaveLength(1);
+		expect((await cliente("GET", "/v1/nfe?referencia=pedido-1001&ambiente=producao")).json.nfe).toHaveLength(0);
+		expect((await cliente("GET", "/v1/nfe?ambiente=teste")).status).toBe(400);
 		expect((await cliente("GET", `/v1/nfse/${json.id}`)).status).toBe(404);
 	});
 
@@ -257,14 +261,17 @@ describe("NF-e pelo cofre", () => {
 
 		const cancelada = await cliente("POST", `/v1/nfe/${nota.id}/cancelar`, { justificativa: "Pedido cancelado pelo cliente" });
 		expect(cancelada.status).toBe(200);
-		expect(cancelada.json.situacao).toBe("cancelada");
+		expect(cancelada.json).toMatchObject({ situacao: "cancelada", repetido: false });
+		expect(carta1.json.repetido).toBe(false);
 		const evento = chamadas("evento")[2] as Chamada;
 		expect(evento.corpo).toContain(`<infEvento Id="ID110111${nota.chaveAcesso}01">`);
 		expect(evento.corpo).toContain("<nProt>135260000000777</nProt><xJust>Pedido cancelado pelo cliente</xJust>");
 		expect(evento.corpo).toMatch(/<\/infEvento><Signature /);
 
-		// Repetir não reenvia; os eventos ficam arquivados ao lado da nota.
-		expect((await cliente("POST", `/v1/nfe/${nota.id}/cancelar`, { justificativa: "Pedido cancelado pelo cliente" })).status).toBe(200);
+		// Repetir não reenvia, e a resposta avisa; os eventos ficam arquivados ao lado da nota.
+		const repetida = await cliente("POST", `/v1/nfe/${nota.id}/cancelar`, { justificativa: "Pedido cancelado pelo cliente" });
+		expect(repetida.status).toBe(200);
+		expect(repetida.json).toMatchObject({ situacao: "cancelada", repetido: true });
 		expect(chamadas("evento")).toHaveLength(3);
 		expect(await documentos()).toEqual([`${nota.chaveAcesso}-cancelamento.xml`, `${nota.chaveAcesso}-cce-01.xml`, `${nota.chaveAcesso}-cce-02.xml`, `${nota.chaveAcesso}-nfe.xml`]);
 		const painel = (await admin("GET", "/admin/notas")).json.notas[0];

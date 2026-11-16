@@ -71,6 +71,13 @@ export function problema(error: z.ZodError): string {
 	return campo ? `Campo "${campo}": ${issue?.message}` : (issue?.message ?? "Requisição inválida.");
 }
 
+/** Filtro ?ambiente= das listagens: undefined quando ausente, null quando inválido. */
+export function ambienteDoFiltro(c: C): "homologacao" | "producao" | undefined | null {
+	const valor = c.req.query("ambiente");
+	if (!valor) return undefined;
+	return valor === "homologacao" || valor === "producao" ? valor : null;
+}
+
 export async function autenticar(c: C): Promise<banco.ApiKey | Response> {
 	const header = c.req.header("authorization") ?? "";
 	const valor = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
@@ -120,9 +127,12 @@ export function registrarApiNfse(app: Hono<Ctx>, makeTransport: (env: AppEnv) =>
 		const chave = await autenticar(c);
 		if (chave instanceof Response) return chave;
 		const limite = Number(c.req.query("limite") ?? 50);
+		const ambiente = ambienteDoFiltro(c);
+		if (ambiente === null) return erro(c, 400, "requisicao_invalida", 'O filtro "ambiente" aceita homologacao ou producao.');
 		const lista = await banco.listEmissions(c.env.DB, Number.isFinite(limite) ? limite : 50, {
 			kind: "nfse",
 			reference: c.req.query("referencia") || undefined,
+			environment: ambiente,
 		});
 		return c.json({ nfse: lista.map(nfseJson) });
 	});
@@ -166,7 +176,8 @@ export function registrarApiNfse(app: Hono<Ctx>, makeTransport: (env: AppEnv) =>
 		if (ops instanceof Response) return ops;
 		const r = await cancelarNfse(c.env.DB, ops, emission, input.data);
 		if (!r.ok) return erro(c, r.status, r.codigo, r.mensagem, { mensagens: r.mensagens });
-		return c.json(nfseJson(r.emission));
+		// `repetido`: a nota já estava cancelada e nada foi enviado ao governo.
+		return c.json({ ...nfseJson(r.emission), repetido: r.jaCancelada });
 	});
 
 	// ---------- Chaves de API (tela /setup) ----------

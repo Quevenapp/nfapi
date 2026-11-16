@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { XmlDocument, XsdValidator } from "libxml2-wasm";
 import { xmlRegisterFsInputProviders } from "libxml2-wasm/lib/nodejs.mjs";
 import { describe, expect, it } from "vitest";
-import { contratoOpenApi } from "../src/contrato";
+import { CODIGOS_DE_ERRO, contratoOpenApi } from "../src/contrato";
 import { EXEMPLO_NFCE, EXEMPLO_NFE } from "../src/contrato-exemplos";
 import { autorizadorNfe } from "../src/fiscal/dados";
 import { chaveValida, digitoVerificador, gerarCodigoNumerico, montarChave } from "../src/nfe/chave";
@@ -301,6 +301,30 @@ describe("contrato da API", () => {
 			fs.writeFileSync(arquivo, gerado);
 		}
 		expect(fs.existsSync(arquivo) ? fs.readFileSync(arquivo, "utf8") : "").toBe(gerado);
+	});
+
+	it("todo código de erro que a API devolve está na tabela do contrato", () => {
+		const src = path.join(import.meta.dirname, "../src");
+		const padroes = [
+			/erro\(c, \d+, "([a-z_]+)"/g,
+			/conflito\(\s*"([a-z_]+)"/g,
+			/falha\(\d+, "([a-z_]+)"/g,
+			/(?:encerrar|naoAutorizada)\(\d+, "[a-z]+", "([a-z_]+)"/g,
+			/OperacaoError\(\d+, "([a-z_]+)"/g,
+			/codigo: "([a-z_]+)"/g,
+			/"(serie_[a-z_]+)"/g,
+		];
+		const encontrados = new Set<string>();
+		for (const arquivo of ["api-nfe.ts", "api-nfse.ts", "emissao/nfe.ts", "emissao/nfse.ts", "emissao/banco.ts", "operacoes.ts"]) {
+			const fonte = fs.readFileSync(path.join(src, arquivo), "utf8");
+			// Em emissao/nfe.ts, recusar() é da inutilização; nas rotas, é do painel (/admin).
+			const lista = arquivo === "emissao/nfe.ts" ? [...padroes, /recusar\(\d+, "([a-z_]+)"/g] : padroes;
+			for (const padrao of lista) for (const m of fonte.matchAll(padrao)) encontrados.add(m[1] as string);
+		}
+		expect(encontrados.size).toBeGreaterThan(20);
+		expect([...encontrados].filter((codigo) => !(codigo in CODIGOS_DE_ERRO))).toEqual([]);
+		const contrato = contratoOpenApi() as Json;
+		expect(contrato.components.schemas.Erro.properties.erro.properties.codigo["x-codigos"].uf_nao_suportada.status).toBe(422);
 	});
 
 	it("os exemplos do contrato são pedidos válidos", () => {
