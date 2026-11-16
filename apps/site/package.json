@@ -1,0 +1,15 @@
+{
+  "name": "@nfapi/site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Site do NFapi (nfapi.queven.app): apresentação e o passo a passo de instalação do cofre, com gerador de segredo.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev --port 8789",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.162.0"
+  }
+}

@@ -22,3 +22,6 @@ worker-configuration.d.ts
 
 # Saída dos scripts de teste (contém XML reais do emitente)
 tools/saida/
+
+# Segredos de produção gerados no deploy (nunca versionar)
+*.segredos-producao.json

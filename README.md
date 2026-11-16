@@ -29,12 +29,13 @@ Seu sistema ──chave de API──▶ API NFapi
 | [`packages/nfse-nacional/`](packages/nfse-nacional) | Montagem da DPS e troca com a SEFIN Nacional. |
 | [`packages/fiscal-data/`](packages/fiscal-data) | Dados que mudam por ato do governo: endereços, leiautes e schemas XSD oficiais. |
 | [`packages/vault-client/`](packages/vault-client) | Cliente da API para falar com o cofre. |
+| [`apps/site/`](apps/site) | O site: apresentação e a página de instalação do cofre, com gerador de segredo. |
 
 ## Instalar o cofre
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Quevenapp/nfapi/tree/main/vault)
 
-Veja o [README do cofre](vault/README.md) para o passo a passo.
+O passo a passo, com gerador do segredo do cofre, está em <https://nfapi.queven.app/instalar>. Veja também o [README do cofre](vault/README.md).
 
 ## Desenvolvimento
 

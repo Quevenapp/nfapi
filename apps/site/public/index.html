@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NFapi — emissão de notas fiscais no Cloudflare</title>
+<meta name="description" content="API open source para emissão de NFS-e, NF-e e NFC-e. O certificado digital e os XML ficam na conta Cloudflare do próprio emitente.">
+<link rel="stylesheet" href="/estilo.css">
+</head>
+<body>
+<main>
+	<header>
+		<h1>NFapi</h1>
+		<p class="lead">API open source para emissão de notas fiscais brasileiras: NFS-e pelo Sistema Nacional, NF-e e NFC-e.</p>
+	</header>
+
+	<section class="card">
+		<h2>A API só emite. O certificado e as notas ficam com você.</h2>
+		<p>Cada emitente instala um <strong>cofre</strong> na própria conta Cloudflare. É ele que guarda o certificado digital A1, assina os documentos, fala com o governo e arquiva os XML. A API nunca recebe o certificado nem armazena as notas.</p>
+		<div class="row">
+			<a class="button" href="/instalar/">Instalar o cofre</a>
+			<a class="button ghost" href="https://github.com/Quevenapp/nfapi">Código no GitHub</a>
+		</div>
+	</section>
+
+	<section class="card">
+		<h2>Estado do projeto</h2>
+		<p class="note"><strong>Em desenvolvimento.</strong> A emissão de NFS-e funciona nos testes automatizados, mas ainda não foi validada de ponta a ponta contra o governo. NF-e e NFC-e ainda não foram implementadas. Não use em produção.</p>
+	</section>
+
+	<footer class="muted small">
+		<p>NFapi é open source (MIT).</p>
+	</footer>
+</main>
+</body>
+</html>

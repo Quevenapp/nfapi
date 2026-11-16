@@ -1,0 +1,8 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "nfapi-site",
+	"compatibility_date": "2026-11-01",
+	// Site estático: não há código de Worker, só os arquivos de public/.
+	"assets": { "directory": "./public" },
+	"routes": [{ "pattern": "nfapi.queven.app", "custom_domain": true }]
+}

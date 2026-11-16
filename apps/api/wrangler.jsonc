@@ -21,7 +21,7 @@
 		{
 			"binding": "DB",
 			"database_name": "nfapi-api",
-			"database_id": "",
+			"database_id": "c902aa1b-f1ed-4712-975e-4ac925dd98af",
 			"migrations_dir": "migrations"
 		}
 	]

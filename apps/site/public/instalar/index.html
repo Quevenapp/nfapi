@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instalar o cofre — NFapi</title>
+<meta name="description" content="Passo a passo para instalar o cofre do NFapi na sua conta Cloudflare, com gerador do segredo do cofre.">
+<link rel="stylesheet" href="/estilo.css">
+</head>
+<body>
+<main>
+	<header>
+		<p class="small"><a href="/">NFapi</a> / Instalar o cofre</p>
+		<h1>Instalar o cofre na sua conta Cloudflare</h1>
+		<p class="lead">O cofre guarda o seu certificado digital A1, assina as notas e arquiva os XML. Ele roda na <strong>sua</strong> conta: o NFapi nunca recebe o certificado.</p>
+	</header>
+
+	<section class="card">
+		<h2>Antes de começar</h2>
+		<ul>
+			<li>Uma conta <strong>Cloudflare</strong> com o plano <strong>Workers Paid</strong> (US$ 5/mês), exigido pelo Container que fala com o governo.</li>
+			<li>Uma conta <strong>GitHub</strong>: o Cloudflare cria nela uma cópia do código do cofre.</li>
+			<li>O arquivo <code>.pfx</code> do seu <strong>certificado A1</strong> e a senha dele.</li>
+		</ul>
+	</section>
+
+	<section class="card step">
+		<div class="num" aria-hidden="true">1</div>
+		<div class="body">
+			<h2>Gere o segredo do cofre</h2>
+			<p>O segredo cifra o seu certificado e é a senha da tela de configuração. Ele é gerado aqui, no seu navegador, e <strong>não é enviado a lugar nenhum</strong>.</p>
+			<div class="row">
+				<button type="button" id="gerar">Gerar segredo</button>
+			</div>
+			<div id="caixa-segredo" hidden>
+				<label for="segredo">Seu segredo (<code>VAULT_SECRET</code>)</label>
+				<input id="segredo" type="password" readonly autocomplete="off" spellcheck="false">
+				<div class="row">
+					<button type="button" id="copiar">Copiar</button>
+					<button type="button" id="baixar" class="ghost">Baixar arquivo .txt</button>
+					<button type="button" id="mostrar" class="ghost" aria-pressed="false">Mostrar</button>
+				</div>
+				<p id="aviso" class="ok" role="status"></p>
+				<p class="note"><strong>Guarde este segredo.</strong> Baixe o arquivo e mantenha-o em um gerenciador de senhas ou outro local seguro. Se ele for perdido, será preciso reinstalar o certificado; quem o tiver consegue entrar na configuração do seu cofre.</p>
+			</div>
+		</div>
+	</section>
+
+	<section class="card step">
+		<div class="num" aria-hidden="true">2</div>
+		<div class="body">
+			<h2>Instale pelo botão do Cloudflare</h2>
+			<p>O botão abre o painel do Cloudflare com tudo preenchido: o Worker, o banco de dados e o armazenamento dos XML.</p>
+			<div class="row">
+				<a class="button" id="deploy" href="https://deploy.workers.cloudflare.com/?url=https://github.com/Quevenapp/nfapi/tree/main/vault" target="_blank" rel="noopener">Deploy to Cloudflare</a>
+			</div>
+			<p></p>
+			<p>No formulário que abrir:</p>
+			<ol>
+				<li>Escolha a sua conta Git.</li>
+				<li>No campo <code>VAULT_SECRET</code>, <strong>apague o que estiver lá</strong> e cole o segredo que você copiou no passo 1.</li>
+				<li>Deixe <strong>Proteger com Cloudflare Access</strong> desligado.</li>
+				<li>Clique em <strong>Implantar</strong> e aguarde o build terminar.</li>
+			</ol>
+			<p class="note"><strong>Atenção ao preenchimento automático.</strong> O navegador pode colocar uma senha salva sua no campo <code>VAULT_SECRET</code>. Limpe o campo antes de colar o segredo.</p>
+		</div>
+	</section>
+
+	<section class="card step">
+		<div class="num" aria-hidden="true">3</div>
+		<div class="body">
+			<h2>Instale o certificado no cofre</h2>
+			<p>Quando o build terminar, o Cloudflare mostra o endereço do seu cofre (algo como <code>nfapi-cofre.sua-conta.workers.dev</code>). Abra-o acrescentando <code>/setup</code> e entre com o segredo.</p>
+			<ol>
+				<li>Envie o arquivo <code>.pfx</code> e a senha do certificado.</li>
+				<li>Rode o <strong>teste de conexão</strong>: ele consulta os serviços de homologação do governo, sem emitir nada.</li>
+				<li>Gere o <strong>código de pareamento</strong>.</li>
+			</ol>
+			<p class="muted small">A produção começa bloqueada: o cofre só assina documentos de homologação até você liberar nessa mesma tela.</p>
+		</div>
+	</section>
+
+	<section class="card step">
+		<div class="num" aria-hidden="true">4</div>
+		<div class="body">
+			<h2>Conecte o cofre à API</h2>
+			<p>Envie o código de pareamento à API do NFapi, com a sua chave de API:</p>
+<pre><code>curl -X POST https://api.nfapi.queven.app/v1/emitentes \
+  -H "Authorization: Bearer SUA_CHAVE_DE_API" \
+  -H "Content-Type: application/json" \
+  -d '{"codigoPareamento": "nfapi-cofre-v1...."}'</code></pre>
+			<p>A API consulta o cofre, lê o CNPJ do certificado e registra o emitente. A partir daí, as notas emitidas por ele são assinadas e arquivadas no seu cofre.</p>
+		</div>
+	</section>
+
+	<footer class="muted small">
+		<p>NFapi é open source (MIT). <a href="https://github.com/Quevenapp/nfapi">Código no GitHub</a></p>
+	</footer>
+</main>
+<script src="/instalar/instalar.js"></script>
+</body>
+</html>
