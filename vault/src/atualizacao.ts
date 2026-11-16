@@ -81,7 +81,7 @@ export function registrarAtualizacao(app: Hono<Ctx>, callFetch: typeof fetch) {
 		const input = (await c.req.json().catch(() => null)) as { url?: unknown } | null;
 		const url = typeof input?.url === "string" ? input.url.trim() : "";
 		if (!HOOK_RE.test(url)) {
-			return fail(c, 400, "gatilho_invalido", "Cole a URL do Deploy Hook criada no painel do Cloudflare (Settings > Builds > Deploy Hooks).");
+			return fail(c, 400, "gatilho_invalido", "Cole a URL do gancho de implantação (Deploy Hook) criada no painel do Cloudflare, em Configurações > Compilações.");
 		}
 		await store.setSetting(c.env.DB, "gatilho_de_build", JSON.stringify(await encryptJson(c.env.VAULT_SECRET, { url })));
 		await store.audit(c.env.DB, { action: "atualizacao.gatilho", actor: "admin", outcome: "ok" });
@@ -91,7 +91,7 @@ export function registrarAtualizacao(app: Hono<Ctx>, callFetch: typeof fetch) {
 	app.post("/admin/atualizacao", async (c) => {
 		const gatilho = await lerGatilho(c);
 		if (!gatilho) {
-			return fail(c, 409, "gatilho_ausente", "Configure o Deploy Hook antes de atualizar.");
+			return fail(c, 409, "gatilho_ausente", "Configure o gancho de implantação (Deploy Hook) antes de atualizar.");
 		}
 		let res: Response;
 		try {
@@ -106,7 +106,7 @@ export function registrarAtualizacao(app: Hono<Ctx>, callFetch: typeof fetch) {
 			detail: { de: VAULT_VERSION },
 		});
 		if (!res.ok) {
-			return fail(c, 502, "gatilho_recusado", `O Cloudflare recusou o gatilho (HTTP ${res.status}). Confira se o Deploy Hook ainda existe.`);
+			return fail(c, 502, "gatilho_recusado", `O Cloudflare recusou o gatilho (HTTP ${res.status}). Confira se o gancho de implantação ainda existe.`);
 		}
 		return c.json({ ok: true, mensagem: "Build iniciado. A nova versão entra no ar em um ou dois minutos." });
 	});

@@ -85,8 +85,8 @@ O governo muda regras, endereços e leiautes com frequência. As correções sã
 Para atualizar com um clique, crie o gatilho uma única vez:
 
 1. No painel do Cloudflare, abra **Workers & Pages** e selecione o Worker do cofre.
-2. Em **Settings > Builds > Deploy Hooks**, crie um gatilho para a branch `main`.
-3. Cole a URL gerada na seção **Atualização** do painel do cofre.
+2. Em **Configurações > Compilações > Ganchos de implantação** (em inglês, Settings > Builds > Deploy Hooks), clique em **Adicionar**, dê um nome ao gancho, escolha a branch `main` e salve.
+3. Copie a URL que aparece abaixo do gancho e cole na seção **Atualização** do painel do cofre.
 
 O botão **Atualizar** dispara um build no Cloudflare. No começo do build, [`tools/atualizar.mjs`](tools/atualizar.mjs) baixa a versão publicada e a instala por cima; o nome do Worker, o banco, o bucket e tudo o que está guardado neles são preservados. Sem o gatilho, o mesmo resultado se obtém refazendo o deploy pelo painel do Cloudflare.
 

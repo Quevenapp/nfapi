@@ -105,11 +105,11 @@ export const SETUP_HTML = String.raw`<!doctype html>
 				<p class="small">A atualização dispara um novo build deste cofre no Cloudflare. Crie o gatilho uma única vez:</p>
 				<ol class="small">
 					<li>No painel do Cloudflare, abra <strong>Workers &amp; Pages</strong> e selecione este Worker.</li>
-					<li>Em <strong>Settings &gt; Builds &gt; Deploy Hooks</strong>, crie um gatilho para a branch <code>main</code>.</li>
-					<li>Copie a URL gerada e cole abaixo.</li>
+					<li>Em <strong>Configurações &gt; Compilações &gt; Ganchos de implantação</strong> (em inglês, Settings &gt; Builds &gt; Deploy Hooks), clique em <strong>Adicionar</strong>, dê um nome ao gancho, escolha a branch <code>main</code> e salve.</li>
+					<li>Copie a URL que aparece abaixo do gancho e cole aqui.</li>
 				</ol>
 				<form id="hook-form">
-					<label for="hook-url">URL do Deploy Hook</label>
+					<label for="hook-url">URL do gancho de implantação (Deploy Hook)</label>
 					<input id="hook-url" type="password" autocomplete="off" placeholder="https://api.cloudflare.com/client/v4/workers/builds/deploy_hooks/..." required>
 					<button type="submit" class="ghost">Salvar gatilho</button>
 				</form>
