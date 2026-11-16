@@ -19,3 +19,6 @@ coverage/
 
 # Tipos gerados por "wrangler types"
 worker-configuration.d.ts
+
+# Saída dos scripts de teste (contém XML reais do emitente)
+tools/saida/

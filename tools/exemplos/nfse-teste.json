@@ -1,0 +1,33 @@
+{
+	"_instrucoes": "Troque os três campos marcados com PREENCHA e ajuste descrição e valor. Formato igual ao do POST /v1/nfse (sem emitente e ambiente). Consulte packages/nfse-nacional/src/schema.ts para os demais campos (tomador, retenções etc.).",
+
+	"serie": "900",
+	"numero": 1,
+
+	"prestador": {
+		"codigoMunicipio": "PREENCHA: código IBGE do município da empresa, 7 dígitos (ex.: 3550308 = São Paulo)",
+		"regimeTributario": {
+			"simplesNacional": "PREENCHA: nao_optante, mei ou me_epp",
+			"apuracaoSimples": 1,
+			"regimeEspecial": 0
+		}
+	},
+
+	"servico": {
+		"codigoMunicipioPrestacao": "PREENCHA: código IBGE do município onde o serviço foi prestado, 7 dígitos",
+		"codigoTributacaoNacional": "PREENCHA: código de tributação nacional, 6 dígitos (ex.: 010701)",
+		"descricao": "Nota de teste emitida pelo NFapi em produção restrita"
+	},
+
+	"valores": {
+		"servico": 10.0
+	},
+
+	"tributacao": {
+		"issqn": {
+			"tipo": "tributavel",
+			"retencao": "nao_retido"
+		},
+		"totalTributos": { "tipo": "nao_informado" }
+	}
+}
