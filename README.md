@@ -4,7 +4,7 @@ Emissor open source de notas fiscais brasileiras — **NFS-e** (Sistema Nacional
 
 Cada emitente instala um **cofre**: um Worker que guarda o certificado digital A1, expõe a API de emissão, fala com o governo e arquiva os XML. Não há serviço intermediário: os seus sistemas chamam o seu cofre, e o seu cofre chama o governo. Ninguém além de você recebe o certificado ou as notas.
 
-> **Estado: em desenvolvimento.** A emissão e o cancelamento de NFS-e já foram validados com notas reais na SEFIN Nacional. Na NF-e, a emissão, a carta de correção e o cancelamento já foram aceitos pela SEFAZ-SP em homologação. A NFC-e gera XML válido nos schemas oficiais e passa nos testes com uma SEFAZ simulada, mas ainda não foi autorizada por uma SEFAZ de verdade; a inutilização também não. Ainda não há DANFE em PDF nem contingência.
+> **Estado: em desenvolvimento.** A emissão e o cancelamento de NFS-e já foram validados com notas reais na SEFIN Nacional. A NF-e (emissão, carta de correção e cancelamento) e a NFC-e (emissão com QR Code versão 3 e cancelamento) já foram aceitas pela SEFAZ-SP em homologação, com o código do cofre rodando fora do Cloudflare; a emissão pela API de um cofre publicado e a inutilização ainda não foram exercitadas contra uma SEFAZ de verdade. Ainda não há DANFE em PDF nem contingência.
 
 ## Como funciona
 
