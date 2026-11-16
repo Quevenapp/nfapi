@@ -8,7 +8,8 @@
   "scripts": {
     "test": "pnpm --dir vault test",
     "typecheck": "pnpm --dir vault typecheck",
-    "emitir-teste": "tsx tools/emitir-nfse-teste.ts"
+    "emitir-teste": "tsx tools/emitir-nfse-teste.ts",
+    "emitir-nfe-teste": "tsx tools/emitir-nfe-teste.ts"
   },
   "devDependencies": {
     "tsx": "^4.23.15"
