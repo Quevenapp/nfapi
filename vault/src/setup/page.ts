@@ -32,6 +32,12 @@ export const SETUP_HTML = String.raw`<!doctype html>
 	</section>
 
 	<div id="panel" hidden>
+		<p id="hook-warning" class="notice" hidden>
+			<strong>Falta um passo da instalação:</strong> configurar a atualização por um clique.
+			Sem isso, cada versão nova precisa ser instalada pelo painel do Cloudflare.
+			<a href="#update-section">Configurar agora</a>
+		</p>
+
 		<section class="card">
 			<h2>1. Certificado digital A1</h2>
 			<div id="cert-status"></div>
@@ -78,6 +84,43 @@ export const SETUP_HTML = String.raw`<!doctype html>
 		</section>
 
 		<section class="card">
+			<h2>NF-e e NFC-e: séries</h2>
+			<p>A NF-e e a NFC-e só são emitidas em séries cadastradas aqui. O cofre numera cada série em sequência; se a empresa já emitiu por outro sistema, informe o número da próxima nota.</p>
+			<ul id="series" class="results"></ul>
+			<p id="series-empty" class="muted" hidden>Nenhuma série cadastrada. A NFS-e não precisa de cadastro.</p>
+			<form id="serie-form">
+				<div class="grid">
+					<div>
+						<label for="serie-modelo">Documento</label>
+						<select id="serie-modelo">
+							<option value="nfe">NF-e (modelo 55)</option>
+							<option value="nfce">NFC-e (modelo 65)</option>
+						</select>
+					</div>
+					<div>
+						<label for="serie-ambiente">Ambiente</label>
+						<select id="serie-ambiente">
+							<option value="homologacao">Homologação</option>
+							<option value="producao">Produção</option>
+						</select>
+					</div>
+					<div>
+						<label for="serie-numero">Série (0 a 889)</label>
+						<input id="serie-numero" type="text" inputmode="numeric" maxlength="3" value="1" required>
+					</div>
+					<div>
+						<label for="serie-proximo">Próxima nota</label>
+						<input id="serie-proximo" type="text" inputmode="numeric" maxlength="9" placeholder="1">
+					</div>
+				</div>
+				<label for="serie-descricao">Descrição (ex.: Caixa 1)</label>
+				<input id="serie-descricao" type="text" maxlength="60">
+				<button type="submit">Salvar série</button>
+			</form>
+			<p id="series-message" role="status"></p>
+		</section>
+
+		<section class="card">
 			<h2>4. Ambiente</h2>
 			<p id="env-status"></p>
 			<button type="button" id="env-toggle" class="ghost"></button>
@@ -92,7 +135,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 			<p id="notes-message" role="status"></p>
 		</section>
 
-		<section class="card">
+		<section class="card" id="update-section">
 			<h2>Atualização</h2>
 			<p id="update-status"></p>
 			<div class="row">
@@ -175,6 +218,9 @@ button.danger { border-color: var(--bad); color: var(--bad); }
 button:disabled { opacity: 0.6; cursor: progress; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 12px; }
+.notice { background: var(--card); border: 1px solid var(--warn); border-left-width: 4px; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+a { color: var(--accent); }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
@@ -320,7 +366,11 @@ export const SETUP_JS = String.raw`(function () {
 
 	// ---------- Notas emitidas ----------
 
-	var ARQUIVOS = { nfse: "XML da NFS-e", dps: "XML da DPS", cancelamento: "Evento de cancelamento" };
+	var ARQUIVOS = {
+		nfse: "XML da NFS-e", nfe: "XML da NF-e", nfce: "XML da NFC-e", dps: "XML da DPS",
+		carta_correcao: "Carta de correção", cancelamento: "Evento de cancelamento"
+	};
+	var NOMES = { nfse: "NFS-e", nfe: "NF-e", nfce: "NFC-e" };
 
 	async function baixar(arquivo) {
 		var res = await fetch("/admin/notas/arquivo?key=" + encodeURIComponent(arquivo.key), {
@@ -344,21 +394,22 @@ export const SETUP_JS = String.raw`(function () {
 		var justificativa = el("textarea", { rows: "2", maxlength: "255", placeholder: "Explique o motivo (mínimo de 15 caracteres)" });
 		var confirmar = el("button", { type: "button", class: "ghost danger", text: "Confirmar cancelamento" });
 		var desistir = el("button", { type: "button", class: "ghost", text: "Voltar" });
-		var form = el("div", { class: "cancel-form" }, [
-			el("label", { text: "Motivo" }), motivo,
+		// Só a NFS-e pede o motivo; NF-e e NFC-e pedem apenas a justificativa.
+		var comMotivo = nota.modelo === "nfse";
+		var form = el("div", { class: "cancel-form" }, (comMotivo ? [el("label", { text: "Motivo" }), motivo] : []).concat([
 			el("label", { text: "Justificativa" }), justificativa,
 			el("div", { class: "row" }, [confirmar, desistir])
-		]);
+		]));
 		desistir.addEventListener("click", function () { form.remove(); });
 		confirmar.addEventListener("click", async function () {
 			if (justificativa.value.trim().length < 15) return message("notes-message", "A justificativa precisa ter ao menos 15 caracteres.", "error");
-			if (!confirm("Cancelar esta nota? O cancelamento é registrado na SEFIN e não pode ser desfeito.")) return;
-			message("notes-message", "Registrando o cancelamento na SEFIN…");
+			if (!confirm("Cancelar esta nota? O cancelamento é registrado no governo e não pode ser desfeito.")) return;
+			message("notes-message", "Registrando o cancelamento…");
 			try {
 				await busy(confirmar, function () {
-					return api("POST", "/admin/notas/cancelar", {
-						chaveAcesso: nota.chaveAcesso, motivo: motivo.value, justificativa: justificativa.value.trim()
-					});
+					var pedido = { chaveAcesso: nota.chaveAcesso, justificativa: justificativa.value.trim() };
+					if (comMotivo) pedido.motivo = motivo.value;
+					return api("POST", "/admin/notas/cancelar", pedido);
 				});
 				message("notes-message", "Nota cancelada.", "ok");
 				await renderNotes();
@@ -377,9 +428,11 @@ export const SETUP_JS = String.raw`(function () {
 		clear(list);
 		$("notes-empty").hidden = data.notas.length > 0;
 		data.notas.forEach(function (n) {
-			var titulo = (n.numeroNfse ? "NFS-e nº " + n.numeroNfse : "NFS-e") +
-				(n.serie ? " · série " + n.serie + ", DPS " + n.numeroDps : "");
+			var nome = NOMES[n.modelo] || "Nota";
+			var titulo = (n.numeroNfse ? nome + " nº " + n.numeroNfse : nome) +
+				(n.serie ? " · série " + n.serie + (n.numeroDps ? ", DPS " + n.numeroDps : "") : "");
 			var cancelada = n.situacao === "cancelada";
+			var denegada = n.situacao === "denegada";
 			var detalhe = "Chave " + n.chaveAcesso +
 				" · " + (n.ambiente === "producao" ? "produção" : "homologação") +
 				(n.valor !== null ? " · R$ " + n.valor.toFixed(2).replace(".", ",") : "") +
@@ -396,12 +449,12 @@ export const SETUP_JS = String.raw`(function () {
 			var item = el("li", {}, [
 				el("div", { class: "head" }, [
 					el("span", { text: titulo }),
-					el("span", { class: "badge " + (cancelada ? "bad" : "ok"), text: cancelada ? "Cancelada" : "Autorizada" })
+					el("span", { class: "badge " + (cancelada || denegada ? "bad" : "ok"), text: cancelada ? "Cancelada" : (denegada ? "Denegada" : "Autorizada") })
 				]),
 				el("span", { class: "detail", text: detalhe }),
 				acts
 			]);
-			if (!cancelada) {
+			if (!cancelada && !denegada) {
 				var cancelar = el("button", { type: "button", class: "ghost danger", text: "Cancelar nota" });
 				cancelar.addEventListener("click", function () {
 					if (!item.querySelector(".cancel-form")) formCancelar(n, item);
@@ -412,10 +465,25 @@ export const SETUP_JS = String.raw`(function () {
 		});
 	}
 
+	// ---------- Séries de NF-e e NFC-e ----------
+
+	async function renderSeries() {
+		var data = await api("GET", "/admin/series");
+		var list = $("series");
+		clear(list);
+		$("series-empty").hidden = data.series.length > 0;
+		data.series.forEach(function (s) {
+			var titulo = (NOMES[s.modelo] || s.modelo) + " · série " + s.serie + (s.descricao ? " · " + s.descricao : "");
+			var detalhe = (s.ambiente === "producao" ? "produção" : "homologação") + " · próxima nota: " + s.proximoNumero;
+			list.appendChild(el("li", {}, [el("span", {}, [el("strong", { text: titulo }), el("span", { class: "detail", text: detalhe })])]));
+		});
+	}
+
 	// ---------- Atualização ----------
 
 	async function renderUpdate(verificar) {
 		var u = await api("GET", "/admin/atualizacao" + (verificar ? "?verificar=1" : ""));
+		$("hook-warning").hidden = u.gatilhoConfigurado;
 		var texto = "Versão instalada: " + u.instalada + ". ";
 		if (!u.publicada) texto += "Não foi possível consultar a versão publicada agora.";
 		else if (u.haAtualizacao) texto += "Há uma versão nova disponível: " + u.publicada + ".";
@@ -451,6 +519,7 @@ export const SETUP_JS = String.raw`(function () {
 		renderCertificate();
 		renderEnvironment();
 		await renderKeys();
+		await renderSeries();
 		await renderNotes();
 		await renderUpdate(false);
 		await renderAudit();
@@ -532,6 +601,27 @@ export const SETUP_JS = String.raw`(function () {
 
 	$("apikey-copy").addEventListener("click", function () {
 		copiar($("apikey-value"), $("apikey-copy"), "Copiada");
+	});
+
+	$("serie-form").addEventListener("submit", async function (ev) {
+		ev.preventDefault();
+		var pedido = {
+			modelo: $("serie-modelo").value,
+			ambiente: $("serie-ambiente").value,
+			serie: Number($("serie-numero").value),
+			descricao: $("serie-descricao").value.trim()
+		};
+		if ($("serie-proximo").value.trim()) pedido.proximoNumero = Number($("serie-proximo").value);
+		try {
+			await busy(ev.submitter, function () { return api("PUT", "/admin/series", pedido); });
+			$("serie-proximo").value = "";
+			$("serie-descricao").value = "";
+			message("series-message", "Série salva.", "ok");
+			await renderSeries();
+			await renderAudit();
+		} catch (err) {
+			message("series-message", err.message, "error");
+		}
 	});
 
 	$("env-toggle").addEventListener("click", async function (ev) {

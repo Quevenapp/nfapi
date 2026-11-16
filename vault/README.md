@@ -30,7 +30,9 @@ O passo a passo completo, com gerador do segredo, está em **<https://nfapi.quev
 3. Abra `https://<seu-cofre>/setup`, entre com o segredo e:
    - envie o arquivo `.pfx` do certificado A1 e a senha dele;
    - rode o **teste de conexão**, que consulta os serviços de homologação;
-   - crie uma **chave de API** para cada sistema que vai emitir.
+   - crie uma **chave de API** para cada sistema que vai emitir;
+   - para NF-e e NFC-e, cadastre as **séries** (com o número da próxima nota);
+   - configure o **gatilho de atualização** (veja abaixo); enquanto ele faltar, o painel avisa no topo.
 
 A produção começa **bloqueada**: o cofre só emite em homologação até você liberar no painel.
 
@@ -38,13 +40,58 @@ A produção começa **bloqueada**: o cofre só emite em homologação até voc�
 
 Todas as chamadas levam a chave de API em `Authorization: Bearer nfapi_...`.
 
+O contrato completo (OpenAPI 3.1), com todos os campos e exemplos, está em [`docs/openapi.json`](docs/openapi.json) e é servido pelo próprio cofre em `GET /v1/openapi.json`, sempre na versão instalada.
+
+Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) ou `nfce` (modelo 65):
+
 | Rota | O que faz |
 |---|---|
-| `POST /v1/nfse` | Emite uma NFS-e |
-| `GET /v1/nfse` | Lista as emissões |
-| `GET /v1/nfse/:id` | Consulta uma emissão |
-| `GET /v1/nfse/:id/xml` | Baixa o XML da NFS-e autorizada |
-| `POST /v1/nfse/:id/cancelar` | Cancela a NFS-e |
+| `POST /v1/{doc}` | Emite |
+| `GET /v1/{doc}` | Lista as emissões (`?referencia=` pesquisa pela referência do seu sistema) |
+| `GET /v1/{doc}/:id` | Consulta uma emissão |
+| `GET /v1/{doc}/:id/xml` | Baixa o XML autorizado |
+| `POST /v1/{doc}/:id/cancelar` | Cancela |
+| `POST /v1/{doc}/:id/consultar` | NF-e e NFC-e: consulta a SEFAZ e fecha uma emissão que ficou sem resposta |
+| `POST /v1/nfe/:id/carta-correcao` | NF-e: registra uma carta de correção |
+| `POST /v1/inutilizacoes` | NF-e e NFC-e: inutiliza uma faixa de numeração (extinta em SP, AC e BA) |
+| `GET /v1/series` | Séries cadastradas e o próximo número de cada uma |
+| `GET /v1/cofre` | Versão, atualização pendente, validade do certificado e ambientes liberados |
+| `GET /v1/sefaz/status` | Status do serviço de autorização da UF |
+
+### NF-e e NFC-e
+
+- **O cofre não calcula imposto.** O seu sistema informa bases, alíquotas e valores de cada item; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva a nota com o protocolo.
+- **Séries cadastradas.** A NF-e e a NFC-e só são emitidas em séries cadastradas no painel do cofre, onde se informa o número da próxima nota (para quem já emitia por outro sistema). O pedido escolhe a série; na NFC-e, o usual é uma série por caixa.
+- **Sem lacunas por rejeição.** Nota rejeitada não existe para a SEFAZ: o número volta para a série.
+- **UFs atendidas.** NF-e: SP e as UFs autorizadas pela SVRS (AC, AL, AP, CE, DF, ES, PA, PB, PI, RJ, RN, RO, RR, SC, SE, TO). NFC-e: SP. `GET /v1/cofre` devolve a lista da versão instalada.
+- **Reforma tributária.** O grupo de IBS e CBS (`impostos.ibsCbs`) já é exigido do regime normal em homologação; o cofre o repassa como informado.
+- **Ainda não há:** DANFE e DANFCE em PDF, contingência (offline e SVC) e eventos além de cancelamento e carta de correção.
+
+Um pedido de NFC-e:
+
+```bash
+curl -X POST https://SEU-COFRE.workers.dev/v1/nfce \
+  -H "Authorization: Bearer nfapi_SUA_CHAVE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ambiente": "homologacao",
+    "referencia": "caixa1-venda-5001",
+    "serie": 1,
+    "naturezaOperacao": "Venda ao consumidor",
+    "emitente": { "nome": "Loja Exemplo Ltda", "inscricaoEstadual": "111111111111", "regime": "simples_nacional",
+      "endereco": { "logradouro": "Rua das Flores", "numero": "100", "bairro": "Centro",
+        "codigoMunicipio": "3550308", "municipio": "São Paulo", "uf": "SP", "cep": "01001000" } },
+    "itens": [ { "codigo": "789", "descricao": "Camiseta de algodão", "ncm": "61091000", "cfop": "5102",
+      "unidade": "UN", "quantidade": 1, "valorUnitario": 59.9,
+      "impostos": { "icms": { "origem": 0, "csosn": "102" } } } ],
+    "pagamentos": [ { "forma": "01", "valor": 100 } ],
+    "troco": 40.1
+  }'
+```
+
+A resposta traz `chaveAcesso`, `protocolo`, `numero`, `valor` e, na NFC-e, `qrCode` e `urlConsulta`. Um exemplo de NF-e está no contrato.
+
+### NFS-e
 
 ```bash
 curl -X POST https://SEU-COFRE.workers.dev/v1/nfse \
@@ -62,7 +109,7 @@ curl -X POST https://SEU-COFRE.workers.dev/v1/nfse \
 ```
 
 - **`ambiente`**: `homologacao` (padrão) ou `producao`.
-- **`referencia`**: o identificador do pedido no seu sistema. Reenviar a mesma referência nunca gera duas notas; se a primeira tentativa ficou sem resposta do governo, o cofre consulta antes de reenviar.
+- **`referencia`**: o identificador do pedido no seu sistema. Reenviar a mesma referência nunca gera duas notas; se a primeira tentativa ficou sem resposta do governo, o cofre consulta antes de reenviar. A mesma referência com conteúdo diferente é recusada (`referencia_com_conteudo_diferente`); só uma nota rejeitada pode ser reenviada corrigida com a mesma referência. Vale para os três documentos.
 - A numeração da DPS é controlada pelo cofre, por série. O emitente é sempre o titular do certificado instalado.
 - Erros vêm como `{ "erro": { "codigo": "...", "mensagem": "..." } }`. Quando o governo rejeita a nota, o corpo traz também a emissão, com as mensagens recebidas.
 - Uma chave criada como **somente homologação** nunca emite nem cancela em produção, mesmo com a produção liberada.
@@ -76,7 +123,7 @@ curl -X POST https://SEU-COFRE.workers.dev/v1/nfse/ID_DA_EMISSAO/cancelar \
   -d '{ "motivo": "erro_emissao", "justificativa": "Nota emitida com o valor incorreto" }'
 ```
 
-Os campos aceitos estão em [`src/nfse/schema.ts`](src/nfse/schema.ts).
+Os campos aceitos estão no contrato; os schemas que os validam ficam em [`src/nfse/schema.ts`](src/nfse/schema.ts) e [`src/nfe/schema.ts`](src/nfe/schema.ts).
 
 ## Atualização
 

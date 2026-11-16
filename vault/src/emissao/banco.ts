@@ -7,14 +7,18 @@ export type EmissionStatus =
 	| "processando"
 	| "autorizada"
 	| "rejeitada"
+	| "denegada"
 	| "erro"
 	| "indefinida"
 	| "cancelada";
 
+/** Documentos que o cofre emite: NFS-e, NF-e (modelo 55) e NFC-e (modelo 65). */
+export type Kind = "nfse" | "nfe" | "nfce";
+
 export interface Emission {
 	id: string;
 	docId: string;
-	kind: "nfse";
+	kind: Kind;
 	environment: Ambiente;
 	reference: string | null;
 	serie: string;
@@ -26,6 +30,12 @@ export interface Emission {
 	messages: Mensagem[];
 	documentKey: string | null;
 	journalKey: string | null;
+	/** Hash do pedido que criou a emissão (null nas emissões anteriores à 0.3). */
+	requestHash: string | null;
+	/** Protocolo de autorização (NF-e/NFC-e). */
+	protocol: string | null;
+	/** Dados próprios de cada documento: valor, QR Code, sequência de eventos. */
+	extra: Record<string, unknown>;
 	createdAt: number;
 	updatedAt: number;
 }
@@ -34,14 +44,41 @@ type Row = Record<string, unknown>;
 const hex = (bytes: ArrayBuffer | Uint8Array) =>
 	[...(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
 
-export function newId(prefix: "nfs" | "chv"): string {
+export function newId(prefix: "nfs" | "nfe" | "nfc" | "inu" | "chv"): string {
 	return `${prefix}_${hex(crypto.getRandomValues(new Uint8Array(10)))}`;
+}
+
+/** JSON com as chaves em ordem, para que pedidos iguais tenham o mesmo hash. */
+function estavel(valor: unknown): unknown {
+	if (Array.isArray(valor)) return valor.map(estavel);
+	if (valor && typeof valor === "object") {
+		const entrada = valor as Record<string, unknown>;
+		return Object.fromEntries(
+			Object.keys(entrada)
+				.sort()
+				.filter((k) => entrada[k] !== undefined)
+				.map((k) => [k, estavel(entrada[k])]),
+		);
+	}
+	return valor;
+}
+
+/** Resposta para a mesma referência reenviada com outro conteúdo. */
+export const REFERENCIA_DIVERGENTE = {
+	codigo: "referencia_com_conteudo_diferente",
+	mensagem:
+		"Esta referência já foi usada em um pedido com conteúdo diferente. Use outra referência para um documento novo.",
+} as const;
+
+/** Hash do conteúdo de um pedido, usado na idempotência por referência. */
+export async function hashPedido(pedido: unknown): Promise<string> {
+	return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(estavel(pedido)))));
 }
 
 const toEmission = (r: Row): Emission => ({
 	id: r.id as string,
 	docId: r.doc_id as string,
-	kind: r.kind as "nfse",
+	kind: r.kind as Kind,
 	environment: r.environment as Ambiente,
 	reference: (r.reference as string | null) ?? null,
 	serie: r.serie as string,
@@ -53,15 +90,139 @@ const toEmission = (r: Row): Emission => ({
 	messages: JSON.parse(r.messages as string) as Mensagem[],
 	documentKey: (r.document_key as string | null) ?? null,
 	journalKey: (r.journal_key as string | null) ?? null,
+	requestHash: (r.request_hash as string | null) ?? null,
+	protocol: (r.protocol as string | null) ?? null,
+	extra: JSON.parse((r.extra as string | null) ?? "{}") as Record<string, unknown>,
 	createdAt: r.created_at as number,
 	updatedAt: r.updated_at as number,
 });
 
 export interface SerieKey {
 	docId: string;
-	kind: "nfse";
+	kind: Kind;
 	environment: Ambiente;
 	serie: string;
+}
+
+// ---------- Séries cadastradas (NF-e e NFC-e) ----------
+
+export interface Serie extends SerieKey {
+	lastNumber: number;
+	label: string | null;
+	createdAt: number | null;
+}
+
+const toSerie = (r: Row): Serie => ({
+	docId: r.doc_id as string,
+	kind: r.kind as Kind,
+	environment: r.environment as Ambiente,
+	serie: r.serie as string,
+	lastNumber: r.last_number as number,
+	label: (r.label as string | null) ?? null,
+	createdAt: (r.created_at as number | null) ?? null,
+});
+
+export async function getSerie(db: D1Database, k: SerieKey): Promise<Serie | null> {
+	const row = await db
+		.prepare("SELECT * FROM series WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ?")
+		.bind(k.docId, k.kind, k.environment, k.serie)
+		.first<Row>();
+	return row ? toSerie(row) : null;
+}
+
+export async function listSeries(db: D1Database, docId: string): Promise<Serie[]> {
+	const { results } = await db
+		.prepare("SELECT * FROM series WHERE doc_id = ? ORDER BY kind, environment, CAST(serie AS INTEGER), serie")
+		.bind(docId)
+		.all<Row>();
+	return results.map(toSerie);
+}
+
+/** Séries do titular e das filiais (CNPJ de mesma raiz, 8 primeiras posições). */
+export async function listSeriesDaRaiz(db: D1Database, raiz: string): Promise<Serie[]> {
+	const { results } = await db
+		.prepare("SELECT * FROM series WHERE substr(doc_id, 1, 8) = ? ORDER BY kind, environment, doc_id, CAST(serie AS INTEGER), serie")
+		.bind(raiz)
+		.all<Row>();
+	return results.map(toSerie);
+}
+
+/** Maior número da série que está em uso (autorizado, em andamento ou sem resposta conclusiva). */
+export async function maiorNumeroEmUso(db: D1Database, k: SerieKey): Promise<number> {
+	const row = await db
+		.prepare(
+			`SELECT MAX(n) AS n FROM (
+				SELECT MAX(number) AS n FROM emissions
+				 WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ? AND status NOT IN ('rejeitada', 'erro')
+				UNION ALL
+				SELECT MAX(last_number) AS n FROM inutilizacoes
+				 WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ?)`,
+		)
+		.bind(k.docId, k.kind, k.environment, k.serie, k.docId, k.kind, k.environment, k.serie)
+		.first<{ n: number | null }>();
+	return row?.n ?? 0;
+}
+
+/**
+ * Cadastra a série ou ajusta o próximo número. Devolve null quando o próximo
+ * número pedido já foi usado nesta série (o que geraria duplicidade).
+ */
+export async function salvarSerie(
+	db: D1Database,
+	k: SerieKey,
+	dados: { proximoNumero?: number; label?: string | null },
+): Promise<Serie | null> {
+	const atual = await getSerie(db, k);
+	const proximo = dados.proximoNumero ?? (atual ? atual.lastNumber + 1 : 1);
+	if (proximo <= (await maiorNumeroEmUso(db, k))) return null;
+	await db
+		.prepare(
+			`INSERT INTO series (doc_id, kind, environment, serie, last_number, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT (doc_id, kind, environment, serie)
+			 DO UPDATE SET last_number = excluded.last_number, label = excluded.label`,
+		)
+		.bind(k.docId, k.kind, k.environment, k.serie, proximo - 1, dados.label === undefined ? (atual?.label ?? null) : dados.label, Date.now())
+		.run();
+	return getSerie(db, k);
+}
+
+/** Reserva o próximo número de uma série cadastrada. Null se a série não existe. */
+export async function nextNumberCadastrada(db: D1Database, k: SerieKey): Promise<number | null> {
+	const row = await db
+		.prepare(
+			`UPDATE series SET last_number = last_number + 1
+			 WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ? RETURNING last_number`,
+		)
+		.bind(k.docId, k.kind, k.environment, k.serie)
+		.first<{ last_number: number }>();
+	return row?.last_number ?? null;
+}
+
+/**
+ * Devolve à série um número que não chegou a existir para o governo. Só vale
+ * quando ele é o último reservado; fora disso o número fica como lacuna, a ser
+ * inutilizada.
+ */
+export async function devolverNumero(db: D1Database, k: SerieKey, number: number): Promise<boolean> {
+	const res = await db
+		.prepare(
+			`UPDATE series SET last_number = last_number - 1
+			 WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ? AND last_number = ?`,
+		)
+		.bind(k.docId, k.kind, k.environment, k.serie, number)
+		.run();
+	return res.meta.changes > 0;
+}
+
+/** A série avança para depois de uma faixa inutilizada ou de um número já usado fora do cofre. */
+export async function avancarSerie(db: D1Database, k: SerieKey, ate: number): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE series SET last_number = MAX(last_number, ?)
+			 WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ?`,
+		)
+		.bind(ate, k.docId, k.kind, k.environment, k.serie)
+		.run();
 }
 
 /** Reserva o próximo número da série, de forma atômica. */
@@ -96,9 +257,12 @@ export async function insertEmission(db: D1Database, e: Emission): Promise<boole
 		await db
 			.prepare(
 				`INSERT INTO emissions (id, doc_id, kind, environment, reference, serie, number, document_id,
-				 status, messages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+				 status, messages, request_hash, extra, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?)`,
 			)
-			.bind(e.id, e.docId, e.kind, e.environment, e.reference, e.serie, e.number, e.documentId, e.status, e.createdAt, e.updatedAt)
+			.bind(
+				e.id, e.docId, e.kind, e.environment, e.reference, e.serie, e.number, e.documentId, e.status,
+				e.requestHash, JSON.stringify(e.extra), e.createdAt, e.updatedAt,
+			)
 			.run();
 		return true;
 	} catch (err) {
@@ -110,7 +274,13 @@ export async function insertEmission(db: D1Database, e: Emission): Promise<boole
 export async function updateEmission(
 	db: D1Database,
 	id: string,
-	patch: Partial<Pick<Emission, "status" | "accessKey" | "fiscalNumber" | "messages" | "documentKey" | "journalKey" | "documentId">>,
+	patch: Partial<
+		Pick<
+			Emission,
+			| "status" | "accessKey" | "fiscalNumber" | "messages" | "documentKey" | "journalKey" | "documentId"
+			| "number" | "requestHash" | "protocol" | "extra"
+		>
+	>,
 ): Promise<Emission> {
 	const current = await db.prepare("SELECT * FROM emissions WHERE id = ?").bind(id).first<Row>();
 	if (!current) throw new Error(`Emissão ${id} inexistente.`);
@@ -118,9 +288,14 @@ export async function updateEmission(
 	await db
 		.prepare(
 			`UPDATE emissions SET status = ?, access_key = ?, fiscal_number = ?, messages = ?,
-			 document_key = ?, journal_key = ?, document_id = ?, updated_at = ? WHERE id = ?`,
+			 document_key = ?, journal_key = ?, document_id = ?, number = ?, request_hash = ?, protocol = ?,
+			 extra = ?, updated_at = ? WHERE id = ?`,
 		)
-		.bind(next.status, next.accessKey, next.fiscalNumber, JSON.stringify(next.messages), next.documentKey, next.journalKey, next.documentId, next.updatedAt, id)
+		.bind(
+			next.status, next.accessKey, next.fiscalNumber, JSON.stringify(next.messages), next.documentKey,
+			next.journalKey, next.documentId, next.number, next.requestHash, next.protocol,
+			JSON.stringify(next.extra), next.updatedAt, id,
+		)
 		.run();
 	return next;
 }
@@ -143,12 +318,65 @@ export async function findByAccessKey(db: D1Database, accessKey: string): Promis
 	return row ? toEmission(row) : null;
 }
 
-export async function listEmissions(db: D1Database, limit: number): Promise<Emission[]> {
+export async function listEmissions(
+	db: D1Database,
+	limit: number,
+	filtro: { kind?: Kind; reference?: string } = {},
+): Promise<Emission[]> {
 	const { results } = await db
-		.prepare("SELECT * FROM emissions ORDER BY created_at DESC, rowid DESC LIMIT ?")
-		.bind(Math.min(Math.max(limit, 1), 200))
+		.prepare(
+			`SELECT * FROM emissions WHERE (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR reference = ?2)
+			 ORDER BY created_at DESC, rowid DESC LIMIT ?3`,
+		)
+		.bind(filtro.kind ?? null, filtro.reference ?? null, Math.min(Math.max(limit, 1), 200))
 		.all<Row>();
 	return results.map(toEmission);
+}
+
+// ---------- Inutilizações ----------
+
+export interface Inutilizacao extends SerieKey {
+	id: string;
+	firstNumber: number;
+	lastNumber: number;
+	protocol: string | null;
+	justification: string;
+	documentKey: string | null;
+	createdAt: number;
+}
+
+export async function insertInutilizacao(db: D1Database, i: Inutilizacao): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO inutilizacoes (id, doc_id, kind, environment, serie, first_number, last_number, protocol,
+			 justification, document_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.bind(i.id, i.docId, i.kind, i.environment, i.serie, i.firstNumber, i.lastNumber, i.protocol, i.justification, i.documentKey, i.createdAt)
+		.run();
+}
+
+/** Se o número caiu numa faixa inutilizada, devolve o fim dela; senão, null. */
+export async function fimDaFaixaInutilizada(db: D1Database, k: SerieKey, number: number): Promise<number | null> {
+	const row = await db
+		.prepare(
+			`SELECT MAX(last_number) AS fim FROM inutilizacoes
+			 WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ? AND first_number <= ? AND last_number >= ?`,
+		)
+		.bind(k.docId, k.kind, k.environment, k.serie, number, number)
+		.first<{ fim: number | null }>();
+	return row?.fim ?? null;
+}
+
+/** Há emissão em uso dentro da faixa? (Número autorizado não pode ser inutilizado.) */
+export async function numerosEmUsoNaFaixa(db: D1Database, k: SerieKey, de: number, ate: number): Promise<number> {
+	const row = await db
+		.prepare(
+			`SELECT COUNT(*) AS n FROM emissions WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ?
+			 AND number BETWEEN ? AND ? AND status NOT IN ('rejeitada', 'erro')`,
+		)
+		.bind(k.docId, k.kind, k.environment, k.serie, de, ate)
+		.first<{ n: number }>();
+	return row?.n ?? 0;
 }
 
 // ---------- Chaves de API ----------

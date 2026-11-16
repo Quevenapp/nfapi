@@ -7,6 +7,8 @@
 // documentos, fala com o governo e arquiva os XML. Não há serviço intermediário.
 
 import { type Context, Hono } from "hono";
+import { z } from "zod";
+import { registrarApiNfe } from "./api-nfe";
 import { cancelarPeloPainel, registrarApiNfse } from "./api-nfse";
 import { registrarAtualizacao } from "./atualizacao";
 import { isAdminSecret, secretIsStrong } from "./crypto";
@@ -31,6 +33,9 @@ export interface AppDeps {
 	/** Chamadas de saída que não vão ao governo (GitHub, Cloudflare). Trocado nos testes. */
 	fetch?: typeof fetch;
 }
+
+// As mensagens de validação dos pedidos saem em português.
+z.config(z.locales.ptBR());
 
 const MAX_PFX_BYTES = 64 * 1024;
 
@@ -180,7 +185,7 @@ export function createApp(makeTransport: (env: AppEnv) => Transport, deps: AppDe
 	// Download de um arquivo da nota (XML da NFS-e, da DPS ou do evento).
 	app.get("/admin/notas/arquivo", async (c) => {
 		const key = c.req.query("key") ?? "";
-		if (!store.isValidDocumentKey(key) || !key.startsWith("nfse/")) {
+		if (!store.isValidDocumentKey(key) || !/^(nfse|nfe|nfce)\//.test(key)) {
 			return fail(c, 400, "chave_invalida", "Arquivo inválido.");
 		}
 		const object = await store.getDocument(c.env.DOCS, key);
@@ -211,6 +216,7 @@ export function createApp(makeTransport: (env: AppEnv) => Transport, deps: AppDe
 
 	registrarAtualizacao(app, callFetch);
 	registrarApiNfse(app, makeTransport);
+	registrarApiNfe(app, makeTransport, callFetch);
 
 	return app;
 }

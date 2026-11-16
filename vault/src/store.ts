@@ -207,6 +207,12 @@ export function getDocument(bucket: R2Bucket, key: string): Promise<R2ObjectBody
 	return bucket.get(`docs/${key}`);
 }
 
+/** Remove um documento de trabalho (por exemplo, a nota assinada que aguardava autorização). */
+export async function deleteDocument(db: D1Database, bucket: R2Bucket, key: string): Promise<void> {
+	await bucket.delete(`docs/${key}`);
+	await db.prepare("DELETE FROM documents WHERE key = ?").bind(key).run();
+}
+
 export async function listDocuments(
 	db: D1Database,
 	opts: { prefix?: string; limit?: number; before?: number },
@@ -247,6 +253,8 @@ export interface NotaArquivo {
 }
 
 export interface Nota {
+	/** nfse, nfe (modelo 55) ou nfce (modelo 65). */
+	modelo: string;
 	chaveAcesso: string;
 	ambiente: string | null;
 	numeroNfse: string | null;
@@ -254,7 +262,7 @@ export interface Nota {
 	numeroDps: number | null;
 	valor: number | null;
 	emitidaEm: string;
-	situacao: "autorizada" | "cancelada";
+	situacao: "autorizada" | "cancelada" | "denegada";
 	canceladaEm: string | null;
 	arquivos: NotaArquivo[];
 }
@@ -264,7 +272,7 @@ export interface Nota {
  * dos próprios arquivos: se há evento de cancelamento arquivado, está cancelada.
  */
 export async function listNotas(db: D1Database, limit = 100): Promise<Nota[]> {
-	const docs = await listDocuments(db, { prefix: "nfse/", limit: 200 });
+	const docs = (await listDocuments(db, { limit: 200 })).filter((d) => /^(nfse|nfe|nfce)\//.test(d.key));
 	const notas = new Map<string, Nota>();
 	// Do mais antigo para o mais novo, para a nota nascer antes dos seus eventos.
 	for (const doc of [...docs].reverse()) {
@@ -274,6 +282,7 @@ export async function listNotas(db: D1Database, limit = 100): Promise<Nota[]> {
 		let nota = notas.get(chave);
 		if (!nota) {
 			nota = {
+				modelo: doc.key.split("/")[0] ?? "nfse",
 				chaveAcesso: chave,
 				// Sem metadado de ambiente (notas antigas), o caminho do arquivo informa.
 				ambiente: typeof meta.ambiente === "string" ? meta.ambiente : (doc.key.split("/")[1] ?? null),
@@ -289,6 +298,14 @@ export async function listNotas(db: D1Database, limit = 100): Promise<Nota[]> {
 			notas.set(chave, nota);
 		}
 		const tipo = typeof meta.tipo === "string" ? meta.tipo : "arquivo";
+		if (tipo === "nfe" || tipo === "nfce") {
+			// NF-e e NFC-e: o número da nota é o da própria série.
+			nota.numeroNfse = meta.numero !== undefined ? String(meta.numero) : nota.numeroNfse;
+			nota.serie = meta.serie !== undefined ? String(meta.serie) : nota.serie;
+			nota.valor = typeof meta.valor === "number" ? meta.valor : nota.valor;
+			nota.emitidaEm = typeof meta.emitidaEm === "string" ? meta.emitidaEm : doc.createdAt;
+			if (meta.situacao === "denegada") nota.situacao = "denegada";
+		}
 		if (tipo === "nfse") {
 			nota.numeroNfse = meta.numeroNfse ? String(meta.numeroNfse) : nota.numeroNfse;
 			nota.serie = meta.serie ? String(meta.serie) : nota.serie;
@@ -308,7 +325,7 @@ export async function listNotas(db: D1Database, limit = 100): Promise<Nota[]> {
 		});
 	}
 	// A nota primeiro, depois a DPS e os eventos.
-	const ordem = ["nfse", "dps", "cancelamento"];
+	const ordem = ["nfse", "nfe", "nfce", "dps", "carta_correcao", "cancelamento"];
 	const posicao = (tipo: string) => (ordem.includes(tipo) ? ordem.indexOf(tipo) : ordem.length);
 	for (const nota of notas.values()) nota.arquivos.sort((a, b) => posicao(a.tipo) - posicao(b.tipo));
 	return [...notas.values()].sort((a, b) => b.emitidaEm.localeCompare(a.emitidaEm)).slice(0, limit);

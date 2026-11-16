@@ -4,7 +4,7 @@ Emissor open source de notas fiscais brasileiras — **NFS-e** (Sistema Nacional
 
 Cada emitente instala um **cofre**: um Worker que guarda o certificado digital A1, expõe a API de emissão, fala com o governo e arquiva os XML. Não há serviço intermediário: os seus sistemas chamam o seu cofre, e o seu cofre chama o governo. Ninguém além de você recebe o certificado ou as notas.
 
-> **Estado: em desenvolvimento.** A emissão e o cancelamento de NFS-e já foram validados com notas reais na SEFIN Nacional. A forma atual, em que o cofre emite sozinho, passa nos testes automatizados mas ainda não repetiu essa validação em produção. NF-e e NFC-e ainda não foram implementadas.
+> **Estado: em desenvolvimento.** A emissão e o cancelamento de NFS-e já foram validados com notas reais na SEFIN Nacional. A NF-e e a NFC-e (emissão, cancelamento, carta de correção e inutilização) geram XML válido nos schemas oficiais e passam nos testes com uma SEFAZ simulada, mas ainda não foram autorizadas por uma SEFAZ de verdade. Ainda não há DANFE em PDF nem contingência.
 
 ## Como funciona
 
@@ -26,6 +26,7 @@ O código do cofre é mantido neste repositório. Quando o governo muda uma regr
 | Pasta | O que é |
 |---|---|
 | [`vault/`](vault) | O cofre: certificado, API de emissão, regras fiscais, transporte mTLS e arquivo. Instalável pelo botão Deploy to Cloudflare. |
+| [`vault/docs/openapi.json`](vault/docs/openapi.json) | O contrato da API (OpenAPI 3.1), gerado dos mesmos schemas que validam os pedidos. |
 | [`vault/schemas/`](vault/schemas) | Schemas XSD oficiais usados para validar os documentos nos testes. |
 | [`apps/site/`](apps/site) | O site: apresentação e a página de instalação do cofre, com gerador de segredo. |
 | [`tools/`](tools) | Scripts de apoio, como a emissão de uma NFS-e de teste a partir desta máquina. |

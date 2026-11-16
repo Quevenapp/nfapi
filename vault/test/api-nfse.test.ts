@@ -137,6 +137,12 @@ describe("o cofre como API de emissão", () => {
 		expect(repetida.json.id).toBe(primeira.json.id);
 		expect(envios()).toHaveLength(1);
 
+		// A mesma referência com outro conteúdo é recusada, em vez de devolver a nota antiga.
+		const alterada = await emitir({ referencia: "pedido-1", valores: { servico: 999 } });
+		expect(alterada.status).toBe(409);
+		expect(alterada.json.erro.codigo).toBe("referencia_com_conteudo_diferente");
+		expect(envios()).toHaveLength(1);
+
 		sefin.responder = async () => ({ status: 400, corpo: { erros: [{ Codigo: "E0312", Descricao: "Código de tributação inválido" }] } });
 		const recusada = await emitir({ referencia: "pedido-2" });
 		expect(recusada.status).toBe(422);

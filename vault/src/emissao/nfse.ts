@@ -81,9 +81,13 @@ export async function emitirNfse(
 ): Promise<ResultadoEmissao> {
 	const config = nfseAmbiente(ambiente);
 	const serieKey = { docId: ops.holder.id, kind: "nfse" as const, environment: ambiente, serie: pedido.serie };
+	const hash = await banco.hashPedido(pedido);
 
 	// ----- Idempotência -----
 	let emission = referencia ? await banco.findByReference(d1, serieKey, referencia) : null;
+	if (emission?.requestHash && emission.requestHash !== hash && emission.status !== "rejeitada" && emission.status !== "erro") {
+		return { tipo: "conflito", codigo: banco.REFERENCIA_DIVERGENTE.codigo, mensagem: banco.REFERENCIA_DIVERGENTE.mensagem };
+	}
 	if (emission?.status === "autorizada" || emission?.status === "cancelada") {
 		return { tipo: "autorizada", nova: false, emission };
 	}
@@ -134,7 +138,13 @@ export async function emitirNfse(
 			});
 
 			if (emission) {
-				emission = await banco.updateEmission(d1, emission.id, { status: "processando", documentId: dps.id, messages: [] });
+				// Nota recusada pode ser reenviada corrigida com a mesma referência: vale o conteúdo novo.
+				emission = await banco.updateEmission(d1, emission.id, {
+					status: "processando",
+					documentId: dps.id,
+					messages: [],
+					requestHash: hash,
+				});
 			} else {
 				const now = Date.now();
 				emission = {
@@ -152,6 +162,9 @@ export async function emitirNfse(
 					messages: [],
 					documentKey: null,
 					journalKey: null,
+					requestHash: hash,
+					protocol: null,
+					extra: {},
 					createdAt: now,
 					updatedAt: now,
 				};

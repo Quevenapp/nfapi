@@ -28,6 +28,9 @@ export interface Operacoes {
 	sign(request: SignRequest): Promise<SignResponse>;
 	transmit(request: TransmitRequest): Promise<TransmitResponse>;
 	putDocument(key: string, body: string, options: { contentType: string; meta?: Record<string, unknown> }): Promise<void>;
+	/** Texto de um documento arquivado, ou null se ele não existe. */
+	getDocument(key: string): Promise<string | null>;
+	removeDocument(key: string): Promise<void>;
 }
 
 interface Bindings {
@@ -111,6 +114,15 @@ export async function abrirOperacoes(env: Bindings, transport: Transport, actor:
 				contentType: options.contentType,
 				meta: options.meta ?? {},
 			});
+		},
+
+		async getDocument(key) {
+			const object = await store.getDocument(env.DOCS, key);
+			return object ? object.text() : null;
+		},
+
+		removeDocument(key) {
+			return store.deleteDocument(env.DB, env.DOCS, key);
 		},
 	};
 }

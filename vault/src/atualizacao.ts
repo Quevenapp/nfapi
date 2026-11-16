@@ -64,13 +64,20 @@ async function lerGatilho(c: C): Promise<string | null> {
 	}
 }
 
+/** Versão instalada, versão publicada e se há atualização a instalar. */
+export async function estadoDaAtualizacao(c: C, callFetch: typeof fetch, forcar = false) {
+	const publicada = await versaoPublicada(c, callFetch, forcar);
+	return {
+		instalada: VAULT_VERSION,
+		publicada,
+		haAtualizacao: publicada ? compararVersoes(publicada, VAULT_VERSION) > 0 : false,
+	};
+}
+
 export function registrarAtualizacao(app: Hono<Ctx>, callFetch: typeof fetch) {
 	app.get("/admin/atualizacao", async (c) => {
-		const publicada = await versaoPublicada(c, callFetch, c.req.query("verificar") === "1");
 		return c.json({
-			instalada: VAULT_VERSION,
-			publicada,
-			haAtualizacao: publicada ? compararVersoes(publicada, VAULT_VERSION) > 0 : false,
+			...(await estadoDaAtualizacao(c, callFetch, c.req.query("verificar") === "1")),
 			gatilhoConfigurado: (await lerGatilho(c)) !== null,
 			canal: `${CANAL.repo}@${CANAL.ref}`,
 		});
