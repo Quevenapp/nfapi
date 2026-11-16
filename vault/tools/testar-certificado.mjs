@@ -91,7 +91,9 @@ const alvos = [
 	statusNFe(
 		"NF-e homologação — SVRS (maioria das UFs)",
 		"https://nfe-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx",
-		43,
+		// 33 = RJ, uma UF atendida pela SVRS. O RS (43) tem autorizador próprio e
+		// a SVRS responde cStat 410 para ele.
+		33,
 	),
 	statusNFe(
 		"NF-e homologação — São Paulo",

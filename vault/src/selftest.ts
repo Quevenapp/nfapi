@@ -48,7 +48,9 @@ export const SELF_TEST_TARGETS: Target[] = [
 	nfeStatus(
 		"NF-e homologação — SVRS",
 		"https://nfe-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx",
-		43,
+		// 33 = RJ, uma UF atendida pela SVRS. O RS (43) tem autorizador próprio e
+		// a SVRS responde cStat 410 para ele.
+		33,
 	),
 	nfeStatus(
 		"NF-e homologação — São Paulo",
