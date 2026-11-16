@@ -2,11 +2,12 @@
 // nfse-emissao.ts; aqui ficam os esquemas, a tradução para HTTP e as consultas.
 
 import { type OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { NfseInput } from "@nfapi/nfse-nacional";
+import { CancelamentoInput, NfseInput } from "@nfapi/nfse-nacional";
 import { VaultError } from "@nfapi/vault-client";
 import { type C, type Ctx, Erro, type RotasDeps, erro, erros, iso, json, security } from "./comum";
 import * as db from "./db";
 import * as emissions from "./emissions";
+import { cancelarNfse } from "./nfse-cancelamento";
 import { emitirNfse } from "./nfse-emissao";
 
 const EmitirNfse = NfseInput.extend({
@@ -35,7 +36,7 @@ const Nfse = z
 		serie: z.string(),
 		numero: z.number().openapi({ description: "Número da DPS." }),
 		idDps: z.string(),
-		situacao: z.enum(["processando", "autorizada", "rejeitada", "erro", "indefinida"]).openapi({
+		situacao: z.enum(["processando", "autorizada", "rejeitada", "erro", "indefinida", "cancelada"]).openapi({
 			description:
 				"`rejeitada`: a SEFIN recusou. `erro`: nada foi transmitido. `indefinida`: foi transmitida sem resposta conclusiva; reenvie com a mesma referência para a API verificar.",
 		}),
@@ -173,6 +174,47 @@ export function registrarNfse(app: OpenAPIHono<Ctx>, deps: RotasDeps) {
 			const emission = await emissions.getEmission(c.env.DB, c.get("account").id, c.req.valid("param").id);
 			if (!emission) return erro(c, 404, "nao_encontrado", "Emissão inexistente nesta conta.");
 			return c.json(nfseJson(emission), 200);
+		},
+	);
+
+	app.openapi(
+		createRoute({
+			method: "post",
+			path: "/v1/nfse/{id}/cancelar",
+			tags: ["NFS-e"],
+			summary: "Cancela uma NFS-e autorizada",
+			description:
+				"Registra o evento de cancelamento na SEFIN Nacional, assinado pelo cofre do emitente. O evento registrado fica arquivado no cofre, ao lado da nota. Se a nota já estiver cancelada, devolve a situação atual sem reenviar. O município define o prazo e as condições em que o cancelamento é aceito.",
+			security,
+			request: {
+				params: IdNfse,
+				body: {
+					required: true,
+					// extend({}) cria o esquema depois que o zod-openapi estendeu o zod; o
+					// original, criado no pacote de NFS-e, pode não ter o método .openapi.
+					content: { "application/json": { schema: CancelamentoInput.extend({}).openapi("CancelarNfse") } },
+				},
+			},
+			responses: {
+				200: json(Nfse, "NFS-e cancelada."),
+				400: erros[400],
+				401: erros[401],
+				404: erros[404],
+				409: json(Erro, "A NFS-e não está autorizada."),
+				422: json(Erro, "A SEFIN recusou o cancelamento, ou o cofre barrou o pedido."),
+				502: json(Erro, "Sem resposta conclusiva do cofre ou da SEFIN."),
+			},
+		}),
+		async (c) => {
+			const account = c.get("account");
+			const emission = await emissions.getEmission(c.env.DB, account.id, c.req.valid("param").id);
+			if (!emission) return erro(c, 404, "nao_encontrado", "Emissão inexistente nesta conta.");
+			const emitter = await db.getEmitter(c.env.DB, account.id, emission.emitterId);
+			if (!emitter) return erro(c, 404, "emitente_nao_encontrado", "O emitente desta nota foi desconectado.");
+
+			const r = await cancelarNfse(c.env.DB, await deps.vaultFor(c, emitter), emitter, emission, c.req.valid("json"));
+			if (!r.ok) return erro(c, r.status, r.codigo, r.mensagem);
+			return c.json(nfseJson(r.emission), 200);
 		},
 	);
 

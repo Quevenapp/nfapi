@@ -101,6 +101,32 @@ export function lerMensagens(valor: unknown): Mensagem[] {
 		});
 }
 
+export type RespostaEvento =
+	/** `xml` é o evento registrado e assinado pela SEFIN Nacional. */
+	| { tipo: "registrado"; xml: string }
+	| { tipo: "rejeitada"; rejeicoes: Mensagem[] }
+	| { tipo: "indefinida"; detalhe: string };
+
+export async function lerRespostaEvento(status: number, corpo: string): Promise<RespostaEvento> {
+	let json: Record<string, unknown>;
+	try {
+		json = JSON.parse(corpo) as Record<string, unknown>;
+	} catch {
+		return { tipo: "indefinida", detalhe: `Resposta HTTP ${status} fora do formato esperado.` };
+	}
+	if (status >= 200 && status < 300 && typeof json.eventoXmlGZipB64 === "string") {
+		return { tipo: "registrado", xml: await gunzipBase64(json.eventoXmlGZipB64) };
+	}
+	const rejeicoes = lerMensagens(json.erros ?? json.Erros ?? json.erro);
+	if (status >= 400 && status < 500 && rejeicoes.length > 0) return { tipo: "rejeitada", rejeicoes };
+	return {
+		tipo: "indefinida",
+		detalhe: rejeicoes[0]
+			? `HTTP ${status}: ${rejeicoes[0].codigo} ${rejeicoes[0].descricao}`.trim()
+			: `Resposta HTTP ${status} sem o evento registrado nem mensagens de erro.`,
+	};
+}
+
 export async function lerRespostaEmissao(status: number, corpo: string): Promise<RespostaEmissao> {
 	let json: Record<string, unknown>;
 	try {

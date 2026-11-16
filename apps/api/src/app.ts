@@ -28,6 +28,7 @@ import {
 } from "./crypto";
 import * as db from "./db";
 import { registrarTestes } from "./admin-testes";
+import { registrarRotasDoCofre } from "./cofre-rotas";
 import { dentroDoLimite, ipDoCliente } from "./limites";
 import { registrarNfse } from "./nfse";
 import { PAINEL_CSS, PAINEL_HTML, PAINEL_JS } from "./painel/page";
@@ -710,6 +711,7 @@ export function createApi(deps: ApiDeps = {}) {
 
 	registrarNfse(app, { vaultFor });
 	registrarTestes(app, { vaultFor });
+	registrarRotasDoCofre(app, { vaultFor });
 
 	// ---------- OpenAPI ----------
 

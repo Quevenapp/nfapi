@@ -250,7 +250,18 @@ export async function emitirNfse(
 	const mensagens = [...resposta.alertas];
 	let documentKey: string | null = null;
 	try {
-		const meta = { tipo: "nfse", chaveAcesso: resposta.chaveAcesso, emissao: emission.id };
+		// Os metadados deixam o cofre listar as notas sem depender da API.
+		const meta = {
+			tipo: "nfse",
+			chaveAcesso: resposta.chaveAcesso,
+			emissao: emission.id,
+			ambiente,
+			serie: emission.serie,
+			numeroDps: emission.number,
+			numeroNfse: resposta.numeroNfse,
+			valor: pedido.valores.servico,
+			emitidaEm: new Date().toISOString(),
+		};
 		await vault.putDocument(`${base}-nfse.xml`, resposta.xml, { contentType: "application/xml", meta });
 		documentKey = `${base}-nfse.xml`;
 		if (dpsAssinada) {

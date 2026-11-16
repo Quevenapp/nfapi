@@ -48,13 +48,13 @@ function escapar(valor: string): string {
 }
 
 /** Tag com texto; devolve "" quando o valor não foi informado. */
-function tag(nome: string, valor: string | number | undefined): string {
+export function tag(nome: string, valor: string | number | undefined): string {
 	if (valor === undefined || valor === "") return "";
 	return `<${nome}>${escapar(String(valor))}</${nome}>`;
 }
 
 /** Tag que agrupa outras; some se não tiver conteúdo. */
-function grupo(nome: string, ...filhos: string[]): string {
+export function grupo(nome: string, ...filhos: string[]): string {
 	const conteudo = filhos.join("");
 	return conteudo ? `<${nome}>${conteudo}</${nome}>` : "";
 }
@@ -65,7 +65,7 @@ function decimal(valor: number | undefined): string | undefined {
 }
 
 /** AAAA-MM-DDThh:mm:ss-03:00 (horário de Brasília), como a DPS exige. */
-function agoraEmBrasilia(agora: Date): string {
+export function agoraEmBrasilia(agora: Date): string {
 	const local = new Date(agora.getTime() - 3 * 3_600_000);
 	return `${local.toISOString().slice(0, 19)}-03:00`;
 }

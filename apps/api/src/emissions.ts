@@ -3,7 +3,13 @@
 import type { Ambiente } from "@nfapi/fiscal-data";
 import type { Mensagem } from "@nfapi/nfse-nacional";
 
-export type EmissionStatus = "processando" | "autorizada" | "rejeitada" | "erro" | "indefinida";
+export type EmissionStatus =
+	| "processando"
+	| "autorizada"
+	| "rejeitada"
+	| "erro"
+	| "indefinida"
+	| "cancelada";
 
 export interface Emission {
 	id: string;
@@ -176,6 +182,19 @@ export async function findByReference(
 	return row ? toEmission(row) : null;
 }
 
+/** Localiza a emissão de um emitente pela chave de acesso da nota. */
+export async function findByAccessKey(
+	db: D1Database,
+	accountId: string,
+	docId: string,
+	accessKey: string,
+): Promise<Emission | null> {
+	const row = await db
+		.prepare("SELECT * FROM emissions WHERE account_id = ? AND doc_id = ? AND access_key = ?")
+		.bind(accountId, docId, accessKey)
+		.first<Row>();
+	return row ? toEmission(row) : null;
+}
 export async function listEmissions(
 	db: D1Database,
 	accountId: string,

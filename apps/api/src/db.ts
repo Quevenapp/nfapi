@@ -209,6 +209,11 @@ export async function listAllEmitters(db: D1Database): Promise<(Emitter & { acco
 	return results.map((r) => ({ ...toEmitter(r), accountName: r.account_name as string }));
 }
 
+/** Localiza o emitente pelo pareamento (usado para autenticar o cofre). */
+export async function findEmitterByPairingId(db: D1Database, pairingId: string): Promise<Emitter | null> {
+	const row = await db.prepare("SELECT * FROM emitters WHERE pairing_id = ?").bind(pairingId).first<Row>();
+	return row ? toEmitter(row) : null;
+}
 /** Uso administrativo: localiza o emitente sem filtrar por conta. */
 export async function getEmitterById(db: D1Database, id: string): Promise<Emitter | null> {
 	const row = await db.prepare("SELECT * FROM emitters WHERE id = ?").bind(id).first<Row>();
