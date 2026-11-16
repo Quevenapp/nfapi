@@ -28,6 +28,7 @@ import {
 } from "./crypto";
 import * as db from "./db";
 import { registrarTestes } from "./admin-testes";
+import { dentroDoLimite, ipDoCliente } from "./limites";
 import { registrarNfse } from "./nfse";
 import { PAINEL_CSS, PAINEL_HTML, PAINEL_JS } from "./painel/page";
 import { API_VERSION } from "./versao";
@@ -220,8 +221,18 @@ export function createApi(deps: ApiDeps = {}) {
 		| { ok: true; emitter: db.Emitter; novo: boolean }
 		| { ok: false; status: 400 | 422 | 502; codigo: string; mensagem: string };
 
-	/** Pareia um cofre com uma conta, a partir do código gerado na tela /setup dele. */
-	async function conectarEmitente(c: C, accountId: string, codigo: string): Promise<Conexao> {
+	type CofreConferido =
+		| {
+				ok: true;
+				pairing: ReturnType<typeof decodePairingCode>;
+				client: VaultClient;
+				health: HealthResponse;
+				cert: NonNullable<HealthResponse["certificate"]>;
+		  }
+		| Extract<Conexao, { ok: false }>;
+
+	/** Abre o código de pareamento e confere se o cofre está pronto para emitir. */
+	async function conferirCofre(codigo: string): Promise<CofreConferido> {
 		let client: VaultClient;
 		let pairing: ReturnType<typeof decodePairingCode>;
 		try {
@@ -236,7 +247,21 @@ export function createApi(deps: ApiDeps = {}) {
 		if (status === "inacessivel") return { ok: false, status: 502, codigo: "cofre_inacessivel", mensagem: detail };
 		const cert = health?.certificate;
 		if (status !== "ativo" || !health || !cert) return { ok: false, status: 422, codigo: status, mensagem: detail };
+		return { ok: true, pairing, client, health, cert };
+	}
 
+	/** Pareia um cofre com uma conta, a partir do código gerado na tela /setup dele. */
+	async function conectarEmitente(c: C, accountId: string, codigo: string): Promise<Conexao> {
+		const cofre = await conferirCofre(codigo);
+		if (!cofre.ok) return cofre;
+		return gravarEmitente(c, accountId, cofre);
+	}
+
+	async function gravarEmitente(
+		c: C,
+		accountId: string,
+		{ pairing, client, health, cert }: Extract<CofreConferido, { ok: true }>,
+	): Promise<Conexao> {
 		const existing = await db.findEmitterByDoc(c.env.DB, accountId, cert.holder.id);
 		const id = existing?.id ?? newId("emi");
 		const sealed = await seal(c.env.MASTER_KEY, id, fromHex(pairing.key));
@@ -353,7 +378,8 @@ export function createApi(deps: ApiDeps = {}) {
 	});
 
 	app.use("/v1/*", async (c, next) => {
-		if (c.req.path === "/v1/versao") return next();
+		// Rotas públicas: a versão e o cadastro (que cria a conta e sua primeira chave).
+		if (c.req.path === "/v1/versao" || c.req.path === "/v1/cadastro") return next();
 		if (!secretIsStrong(c.env.MASTER_KEY)) {
 			return erro(c, 503, "api_nao_configurada", "MASTER_KEY ausente ou curta demais.");
 		}
@@ -463,6 +489,78 @@ export function createApi(deps: ApiDeps = {}) {
 		await db.deleteEmitter(c.env.DB, emitter.accountId, emitter.id);
 		return c.json({ ok: true });
 	});
+
+	// ---------- Cadastro (público) ----------
+
+	const ChaveApiCriada = ChaveApi.extend({
+		chave: z.string().openapi({ description: "Valor completo da chave. Só aparece nesta resposta." }),
+	}).openapi("ChaveApiCriada");
+
+	app.openapi(
+		createRoute({
+			method: "post",
+			path: "/v1/cadastro",
+			tags: ["Conta"],
+			summary: "Cria uma conta a partir de um cofre instalado",
+			description:
+				"Autoatendimento: quem instalou um cofre e nele um certificado A1 válido cria a própria conta. Normalmente esta rota é chamada pelo próprio cofre, no botão **Criar minha conta** da tela `/setup`. A resposta traz a primeira chave de API, que não pode ser consultada depois.",
+			request: {
+				body: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: z
+								.object({
+									codigoPareamento: z.string().min(20).max(2000),
+									email: z.email().max(200),
+									nome: z.string().trim().min(2).max(120).optional(),
+								})
+								.openapi("Cadastro"),
+						},
+					},
+				},
+			},
+			responses: {
+				201: json(
+					z.object({ conta: Conta, chave: ChaveApiCriada, emitente: Emitente }).openapi("CadastroCriado"),
+					"Conta criada, com a primeira chave de API e o cofre conectado.",
+				),
+				400: erros[400],
+				409: json(Erro, "Já existe uma conta com este e-mail."),
+				422: json(Erro, "O cofre respondeu, mas não está pronto (sem certificado, vencido ou desatualizado)."),
+				429: json(Erro, "Muitas tentativas de cadastro; aguarde antes de tentar de novo."),
+				502: json(Erro, "Não foi possível falar com o cofre."),
+				503: json(Erro, "A API não está configurada."),
+			},
+		}),
+		async (c) => {
+			if (!secretIsStrong(c.env.MASTER_KEY)) {
+				return erro(c, 503, "api_nao_configurada", "MASTER_KEY ausente ou curta demais.");
+			}
+			// Rota sem autenticação: poucas tentativas por IP a cada hora.
+			if (!(await dentroDoLimite(c.env.DB, `cadastro:${ipDoCliente(c.req.raw.headers)}`, 5, 3600))) {
+				return erro(c, 429, "muitas_tentativas", "Muitas tentativas de cadastro a partir deste endereço. Tente de novo em uma hora.");
+			}
+			const input = c.req.valid("json");
+
+			// O cofre é conferido antes de criar qualquer coisa: sem cofre pronto, não há conta.
+			const cofre = await conferirCofre(input.codigoPareamento);
+			if (!cofre.ok) return erro(c, cofre.status, cofre.codigo, cofre.mensagem);
+
+			const account = await db.createAccount(c.env.DB, {
+				id: newId("cta"),
+				name: input.nome ?? (cofre.cert.commonName.split(":")[0]?.trim() || cofre.cert.commonName),
+				email: input.email.toLowerCase(),
+			});
+			if (!account) {
+				return erro(c, 409, "email_ja_cadastrado", "Já existe uma conta com este e-mail. Peça uma nova chave ao administrador.");
+			}
+			const chave = await emitirChave(c, account.id, "Chave principal");
+			const conexao = await gravarEmitente(c, account.id, cofre);
+			if (!conexao.ok) return erro(c, conexao.status, conexao.codigo, conexao.mensagem);
+			return c.json({ conta: contaJson(account), chave, emitente: emitenteJson(conexao.emitter) }, 201);
+		},
+	);
 
 	// ---------- Conta ----------
 

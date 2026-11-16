@@ -36,7 +36,7 @@ export const Erro = z
 	})
 	.openapi("Erro");
 
-export type Status = 400 | 401 | 404 | 409 | 422 | 500 | 502 | 503;
+export type Status = 400 | 401 | 404 | 409 | 422 | 429 | 500 | 502 | 503;
 
 export function erro<S extends Status>(c: C, status: S, codigo: string, mensagem: string) {
 	return c.json({ erro: { codigo, mensagem } }, status);

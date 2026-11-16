@@ -14,7 +14,10 @@ const transporte: Transport = {
 		throw new Error("não deveria transmitir nestes testes");
 	},
 };
-const vault = createVault(() => transporte);
+// O cofre alcança a API (para o cadastro) pelo mesmo caminho em memória.
+const vault = createVault(() => transporte, {
+	fetch: async (input, init) => api.request(input as string, init, env),
+});
 const vaultEnv: VaultEnv = { DB: env.VAULT_DB, DOCS: env.VAULT_DOCS, VAULT_SECRET: env.VAULT_SECRET };
 
 let cofreNoAr = true;
@@ -74,7 +77,9 @@ async function criarConta(email = "financeiro@empresa-teste.com.br") {
 
 beforeEach(async () => {
 	cofreNoAr = true;
-	await env.DB.batch(["emitters", "api_keys", "accounts"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
+	await env.DB.batch(
+		["rate_limits", "emitters", "api_keys", "accounts"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
+	);
 	await env.VAULT_DB.batch(
 		["certificate", "pairing", "nonces", "settings", "audit", "documents"].map((t) =>
 			env.VAULT_DB.prepare(`DELETE FROM ${t}`),
@@ -245,6 +250,76 @@ describe("emitentes", () => {
 		expect((await call("GET", "/v1/emitentes/id-malformado", dona.chave)).status).toBe(400);
 		expect((await call("DELETE", `/v1/emitentes/${emitente.id}`, dona.chave)).status).toBe(204);
 		expect((await call("GET", `/v1/emitentes/${emitente.id}`, dona.chave)).status).toBe(404);
+	});
+});
+
+describe("cadastro pelo próprio cofre", () => {
+	const registrar = (email: string) =>
+		cofreAdmin("/admin/register", { method: "POST", body: JSON.stringify({ email, apiUrl: API }) });
+	const pareamentosAtivos = async () =>
+		(await env.VAULT_DB.prepare("SELECT COUNT(*) AS n FROM pairing WHERE revoked_at IS NULL").first<{ n: number }>())?.n;
+
+	it("o emitente cria a conta na tela do cofre e recebe a chave de API", async () => {
+		await instalarCertificadoNoCofre();
+		const res = await registrar("Dono@Empresa-Teste.com.br");
+		expect(res.status).toBe(200);
+		const out = (await res.json()) as Json;
+		expect(out.chave).toMatch(/^nfapi_[A-Za-z0-9_-]{43}$/);
+		// Sem nome informado, a conta leva a razão social do certificado.
+		expect(out.conta).toMatchObject({ nome: "EMPRESA TESTE NFAPI LTDA", email: "dono@empresa-teste.com.br" });
+
+		// A chave já funciona e o cofre já está conectado.
+		const emitentes = await call("GET", "/v1/emitentes", out.chave);
+		expect(emitentes.json.emitentes).toHaveLength(1);
+		expect(emitentes.json.emitentes[0]).toMatchObject({
+			documento: { numero: CNPJ_TESTE },
+			cofre: { url: COFRE, situacao: "ativo" },
+		});
+		expect(await pareamentosAtivos()).toBe(1);
+
+		// A auditoria do cofre registra o cadastro, sem a chave de API.
+		const auditoria = await env.VAULT_DB.prepare("SELECT * FROM audit WHERE action = 'cadastro'").all();
+		expect(auditoria.results).toHaveLength(1);
+		expect(JSON.stringify(auditoria.results)).not.toContain(out.chave);
+	});
+
+	it("e-mail repetido é recusado e o pareamento da tentativa não fica solto", async () => {
+		await instalarCertificadoNoCofre();
+		expect((await registrar("dono@empresa-teste.com.br")).status).toBe(200);
+
+		const repetido = await registrar("dono@empresa-teste.com.br");
+		expect(repetido.status).toBe(409);
+		expect(((await repetido.json()) as Json).error.code).toBe("email_ja_cadastrado");
+		expect(await pareamentosAtivos()).toBe(1);
+		expect((await call("GET", "/admin/contas", env.ADMIN_TOKEN)).json.contas).toHaveLength(1);
+	});
+
+	it("sem certificado não há conta, nem pelo cofre nem direto na API", async () => {
+		const peloCofre = await registrar("dono@empresa-teste.com.br");
+		expect(peloCofre.status).toBe(409);
+		expect(((await peloCofre.json()) as Json).error.code).toBe("certificado_ausente");
+
+		const { code } = await gerarCodigoDePareamento();
+		const direto = await call("POST", "/v1/cadastro", undefined, { codigoPareamento: code, email: "x@empresa-teste.com.br" });
+		expect(direto.status).toBe(422);
+		expect(direto.json.erro.codigo).toBe("sem_certificado");
+		expect((await call("GET", "/admin/contas", env.ADMIN_TOKEN)).json.contas).toHaveLength(0);
+	});
+
+	it("valida a entrada e limita as tentativas por endereço", async () => {
+		const invalido = { codigoPareamento: "isto-nao-e-um-codigo-valido", email: "x@empresa-teste.com.br" };
+		const semEmail = await call("POST", "/v1/cadastro", undefined, { ...invalido, email: "nao-e-email" });
+		expect(semEmail.status).toBe(400);
+		expect(semEmail.json.erro.codigo).toBe("requisicao_invalida");
+
+		// A validação do corpo acontece antes da contagem; estas cinco contam.
+		for (let i = 0; i < 5; i++) {
+			const r = await call("POST", "/v1/cadastro", undefined, invalido);
+			expect(r.json.erro.codigo).toBe("codigo_invalido");
+		}
+		const sexta = await call("POST", "/v1/cadastro", undefined, invalido);
+		expect(sexta.status).toBe(429);
+		expect(sexta.json.erro.codigo).toBe("muitas_tentativas");
 	});
 });
 

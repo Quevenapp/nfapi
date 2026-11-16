@@ -3,7 +3,9 @@
 	"name": "nfapi-api",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-11-01",
-	"compatibility_flags": ["nodejs_compat"],
+	// global_fetch_strictly_public: a API alcança cofres pelo endereço público mesmo
+	// quando o cofre está na mesma conta Cloudflare (sem isso, o fetch falha com 1042).
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"observability": { "enabled": true },
 
 	// O painel de administração (/painel) é servido por este mesmo Worker.
