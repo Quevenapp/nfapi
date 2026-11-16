@@ -78,6 +78,8 @@ const EmissaoNfe = {
 		},
 		chaveAcesso: textoOuNulo,
 		protocolo: textoOuNulo,
+		emitidaEm: { ...textoOuNulo, description: "Data e hora de emissão que estão no XML (dhEmi), com o fuso da UF." },
+		autorizadaEm: { ...textoOuNulo, description: "Data e hora em que a SEFAZ autorizou (dhRecbto). Com o protocolo, vai impressa no DANFE e no DANFCE." },
 		valor: { type: ["number", "null"], description: "Valor total da nota (vNF), somado pelo cofre." },
 		qrCode: { ...textoOuNulo, description: "Só na NFC-e: conteúdo do QR Code." },
 		urlConsulta: { ...textoOuNulo, description: "Só na NFC-e: endereço de consulta pela chave." },

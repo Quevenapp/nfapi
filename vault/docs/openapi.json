@@ -2,7 +2,7 @@
 	"openapi": "3.1.0",
 	"info": {
 		"title": "Cofre NFapi",
-		"version": "0.3.0",
+		"version": "0.3.1",
 		"description": "API de emissão de notas fiscais do cofre NFapi, que roda na conta Cloudflare do emitente. Todas as chamadas levam uma chave de API criada na tela /setup do cofre. O cofre não calcula imposto: o sistema que chama informa bases, alíquotas e valores; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva. Erros vêm sempre como `{ \"erro\": { \"codigo\", \"mensagem\" } }`.",
 		"license": {
 			"name": "MIT"
@@ -5301,6 +5301,20 @@
 							"string",
 							"null"
 						]
+					},
+					"emitidaEm": {
+						"type": [
+							"string",
+							"null"
+						],
+						"description": "Data e hora de emissão que estão no XML (dhEmi), com o fuso da UF."
+					},
+					"autorizadaEm": {
+						"type": [
+							"string",
+							"null"
+						],
+						"description": "Data e hora em que a SEFAZ autorizou (dhRecbto). Com o protocolo, vai impressa no DANFE e no DANFCE."
 					},
 					"valor": {
 						"type": [

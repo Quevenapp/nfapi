@@ -51,6 +51,9 @@ export const nfeJson = (e: banco.Emission) => ({
 	situacao: e.status,
 	chaveAcesso: e.accessKey,
 	protocolo: e.protocol,
+	/** Data de emissão que está no XML (dhEmi) e data em que a SEFAZ autorizou (dhRecbto). */
+	emitidaEm: typeof e.extra.emitidaEm === "string" ? e.extra.emitidaEm : null,
+	autorizadaEm: typeof e.extra.autorizadaEm === "string" ? e.extra.autorizadaEm : null,
 	valor: typeof e.extra.valor === "number" ? e.extra.valor : null,
 	qrCode: typeof e.extra.qrCode === "string" ? e.extra.qrCode : null,
 	urlConsulta: typeof e.extra.urlConsulta === "string" ? e.extra.urlConsulta : null,

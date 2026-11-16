@@ -117,6 +117,9 @@ describe("NF-e pelo cofre", () => {
 			protocolo: "135260000000777", valor: 700, xmlDisponivel: true, mensagens: [{ codigo: "100", descricao: "Autorizado o uso da NF-e" }],
 		});
 		expect(json.chaveAcesso).toMatch(new RegExp(`^35\\d{4}${CNPJ_TESTE}55001000000100`));
+		// As datas que o DANFE imprime: a de emissão (do XML) e a de autorização (da SEFAZ).
+		expect(json.emitidaEm).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}-03:00$/);
+		expect(json.autorizadaEm).toBe("2026-11-16T12:31:00-03:00");
 		expect(await proximo()).toBe(101);
 
 		// Uma única chamada, síncrona, ao autorizador de SP.
@@ -194,7 +197,10 @@ describe("NF-e pelo cofre", () => {
 		sefaz.chamadas = [];
 		const retomada = await emitir();
 		expect(retomada.status).toBe(201);
-		expect(retomada.json).toMatchObject({ id: perdida.json.nfe.id, numero: 1, situacao: "autorizada", chaveAcesso: perdida.json.nfe.chaveAcesso, protocolo: "135260000000777" });
+		expect(retomada.json).toMatchObject({
+			id: perdida.json.nfe.id, numero: 1, situacao: "autorizada", chaveAcesso: perdida.json.nfe.chaveAcesso,
+			protocolo: "135260000000777", autorizadaEm: "2026-11-16T12:31:00-03:00", emitidaEm: perdida.json.nfe.emitidaEm,
+		});
 		expect(sefaz.chamadas.map((c) => c.servico)).toEqual(["consulta"]);
 		expect(sefaz.chamadas[0]?.url).toBe(`${SP}/nfeconsultaprotocolo4.asmx`);
 		const xml = await cliente("GET", `/v1/nfe/${retomada.json.id}/xml`);

@@ -123,7 +123,9 @@ async function arquivar(
 	});
 	const pendente = emission.extra.pendente;
 	if (typeof pendente === "string") await ops.removeDocument(pendente).catch(() => undefined);
-	const { pendente: _descartado, ...extra } = emission.extra;
+	const { pendente: _descartado, ...resto } = emission.extra;
+	// Data e hora em que a SEFAZ autorizou (dhRecbto): vai impressa no DANFE.
+	const extra = autorizada && r.recebidaEm ? { ...resto, autorizadaEm: r.recebidaEm } : resto;
 	return banco.updateEmission(d1, emission.id, {
 		status: autorizada ? "autorizada" : "denegada",
 		protocol: autorizada ? r.protocolo : null,
@@ -237,7 +239,7 @@ export async function emitirNfe(
 		// ----- XML -----
 		const montada = montarNfe(pedido, { ambiente, cnpj, serie, numero, cNF: gerarCodigoNumerico(numero), versaoAplicativo: VERSAO_APLICATIVO });
 		let xml = montada.xml;
-		const extra: Record<string, unknown> = { valor: montada.total, uf };
+		const extra: Record<string, unknown> = { valor: montada.total, uf, emitidaEm: montada.dataEmissao };
 		if (kind === "nfce" && autorizador.nfce) {
 			const supl = suplementoNfce(montada.chave, ambiente, autorizador.nfce);
 			xml = comSuplementoNfce(xml, supl.qrCode, supl.urlChave);
