@@ -1,6 +1,7 @@
 // Valida os XML de NF-e, NFC-e, eventos e inutilização contra os XSD oficiais
 // (schemas/nfe). Roda no Node porque o validador não carrega no workerd.
 
+import { createVerify } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,8 +12,8 @@ import { CODIGOS_DE_ERRO, contratoOpenApi } from "../src/contrato";
 import { EXEMPLO_NFCE, EXEMPLO_NFE } from "../src/contrato-exemplos";
 import { autorizadorNfe } from "../src/fiscal/dados";
 import { chaveValida, digitoVerificador, gerarCodigoNumerico, montarChave } from "../src/nfe/chave";
-import { montarCancelamentoNfe, montarCartaCorrecao, montarInutilizacao } from "../src/nfe/eventos";
-import { suplementoNfce } from "../src/nfe/qrcode";
+import { montarCancelamentoNfe, montarCancelamentoPorSubstituicao, montarCartaCorrecao, montarInutilizacao } from "../src/nfe/eventos";
+import { assinarRsaSha1, dadosDoQrCodeOffline, suplementoNfce, suplementoNfceOffline } from "../src/nfe/qrcode";
 import { NfceInput, NfeInput, type PedidoNfe } from "../src/nfe/schema";
 import { consReciNFe, consSitNFe, consStatServ, envEvento, enviNFe } from "../src/nfe/sefaz";
 import { comSuplementoNfce, montarNfe } from "../src/nfe/xml";
@@ -239,6 +240,34 @@ describe("NFC-e (modelo 65)", () => {
 		expect(montada.total).toBe(59.9);
 	});
 
+	it("em contingência offline: tipo 9 na chave, dhCont, xJust e o QR Code assinado com o certificado", async () => {
+		const enderecos = autorizadorNfe("65", "SP", "homologacao")?.nfce as NonNullable<NonNullable<ReturnType<typeof autorizadorNfe>>["nfce"]>;
+		const emContingencia = { ...contexto, contingencia: { desde: "2026-11-16T12:20:00-03:00", justificativa: "Sem resposta da SEFAZ na autorizacao" } };
+		const montada = montarNfe(nfce(), emContingencia);
+		expect(montada.chave[34]).toBe("9");
+		expect(chaveValida(montada.chave)).toBe(true);
+		expect(montada.xml).toContain("<tpEmis>9</tpEmis>");
+		expect(montada.xml).toContain("<verProc>NFapi-teste</verProc><dhCont>2026-11-16T12:20:00-03:00</dhCont><xJust>Sem resposta da SEFAZ na autorizacao</xJust>");
+
+		const dados = { dataEmissao: montada.dataEmissao, total: montada.total, destinatario: { cpf: "12345678909" } };
+		const campos = dadosDoQrCodeOffline(montada.chave, "homologacao", dados);
+		expect(campos).toBe(`${montada.chave}|3|2|16|59.90|2|12345678909`);
+		const supl = await suplementoNfceOffline(montada.chave, "homologacao", enderecos, dados, (texto) => assinarRsaSha1(cert.privateKeyPem, texto));
+		expect(supl.qrCode.startsWith(`https://www.homologacao.nfce.fazenda.sp.gov.br/qrcode?p=${campos}|`)).toBe(true);
+		// A assinatura confere com a chave pública do certificado (RSA-SHA1, Base64).
+		const assinatura = supl.qrCode.split("|").at(-1) as string;
+		expect(createVerify("RSA-SHA1").update(campos).verify(cert.certificatePem, assinatura, "base64")).toBe(true);
+		expect(validar(assinar(comSuplementoNfce(montada.xml, supl.qrCode, supl.urlChave), "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
+
+		// Sem consumidor identificado, os dois campos do destinatário ficam vazios; com CNPJ, tipo 1.
+		const anonima = montarNfe(nfce({ destinatario: undefined }), emContingencia);
+		const semDestinatario = { dataEmissao: "2026-11-05T10:00:00-03:00", total: 1234.5 };
+		expect(dadosDoQrCodeOffline(anonima.chave, "producao", semDestinatario)).toBe(`${anonima.chave}|3|1|05|1234.50||`);
+		expect(dadosDoQrCodeOffline(anonima.chave, "homologacao", { ...semDestinatario, destinatario: { cnpj: CNPJ_TESTE } })).toBe(`${anonima.chave}|3|2|05|1234.50|1|${CNPJ_TESTE}`);
+		const suplAnonima = await suplementoNfceOffline(anonima.chave, "homologacao", enderecos, { dataEmissao: anonima.dataEmissao, total: anonima.total }, (texto) => assinarRsaSha1(cert.privateKeyPem, texto));
+		expect(validar(assinar(comSuplementoNfce(anonima.xml, suplAnonima.qrCode, suplAnonima.urlChave), "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
+	});
+
 	it("vale sem consumidor identificado, e em produção mantém a descrição do item", () => {
 		const montada = montarNfe(nfce({ destinatario: undefined, troco: undefined, pagamentos: [{ forma: "17", valor: 59.9 }] }), { ...contexto, ambiente: "producao" });
 		expect(validar(assinar(montada.xml, "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
@@ -267,6 +296,15 @@ describe("eventos, consultas e inutilização", () => {
 		expect(validar(detalheDoEvento(evento.xml), "evento/e110111_v1.00.xsd")).toEqual([]);
 		expect(evento.xml).toContain("<cOrgao>35</cOrgao><tpAmb>2</tpAmb>");
 		expect(evento.xml).toContain("<dhEvento>2026-11-16T12:30:00-03:00</dhEvento>");
+	});
+
+	it("cancelamento por substituição (110112), apontando para a nota de contingência", () => {
+		const substituta = montarChave({ cUF: "35", emissao: "2026-11-16", cnpj: CNPJ_TESTE, modelo: "65", serie: 1, numero: 43, tpEmis: "9", cNF: "12348765" });
+		const evento = montarCancelamentoPorSubstituicao(ctx, "135260000000123", "NFC-e substituida por nota emitida em contingencia", substituta, "NFapi-teste");
+		expect(evento.id).toBe(`ID110112${chave}01`);
+		expect(validar(envEvento(assinar(evento.xml, "infEvento"), "1"), "evento/envEvento_v1.00.xsd")).toEqual([]);
+		expect(validar(detalheDoEvento(evento.xml), "evento/e110112_v1.00.xsd")).toEqual([]);
+		expect(evento.xml).toContain(`<chNFeRef>${substituta}</chNFeRef>`);
 	});
 
 	it("carta de correção (110110), com a sequência no Id", () => {

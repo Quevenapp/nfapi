@@ -72,9 +72,9 @@ const EmissaoNfe = {
 		numero: { type: "integer" },
 		situacao: {
 			type: "string",
-			enum: ["processando", "autorizada", "rejeitada", "denegada", "erro", "indefinida", "cancelada"],
+			enum: ["processando", "autorizada", "contingencia", "rejeitada", "denegada", "erro", "indefinida", "cancelada"],
 			description:
-				"`indefinida`: a resposta do governo se perdeu; use POST .../consultar ou repita o pedido com a mesma referência. `erro`: barrada pelo cofre antes de transmitir.",
+				"`indefinida`: a resposta do governo se perdeu; use POST .../consultar ou repita o pedido com a mesma referência. `erro`: barrada pelo cofre antes de transmitir. `contingencia`: NFC-e emitida offline; vale para o consumidor, ainda sem protocolo, e o cofre a transmite quando a SEFAZ voltar.",
 		},
 		chaveAcesso: textoOuNulo,
 		protocolo: textoOuNulo,
@@ -84,12 +84,39 @@ const EmissaoNfe = {
 		qrCode: { ...textoOuNulo, description: "Só na NFC-e: conteúdo do QR Code." },
 		urlConsulta: { ...textoOuNulo, description: "Só na NFC-e: endereço de consulta pela chave." },
 		cartasCorrecao: { type: "integer" },
+		contingencia: {
+			type: ["object", "null"],
+			description: "Só na NFC-e emitida em contingência offline; null nas demais.",
+			properties: {
+				pendente: { type: "boolean", description: "A nota ainda aguarda a transmissão à SEFAZ." },
+				desde: { ...textoOuNulo, description: "Quando o emitente entrou em contingência (dhCont)." },
+				motivo: textoOuNulo,
+				tentativasDeTransmissao: { type: "integer" },
+				ultimaTentativa: textoOuNulo,
+				notaNormalEmConferencia: { ...textoOuNulo, description: "Chave da NFC-e normal da mesma venda que ficou sem resposta: o cofre ainda vai conferi-la na SEFAZ." },
+				falhaNaConferencia: { ...textoOuNulo, description: "A SEFAZ rejeitou o cancelamento da nota normal: precisa de ação do emitente." },
+				notaNormalCancelada: { ...textoOuNulo, description: "Chave da NFC-e normal que acabou autorizada e foi cancelada por substituição (evento 110112)." },
+			},
+		},
 		mensagens,
-		xmlDisponivel: { type: "boolean" },
+		xmlDisponivel: { type: "boolean", description: "Na contingência pendente, o XML é a nota assinada sem protocolo; depois de autorizada, o nfeProc." },
 		criadaEm: dataHora,
 		atualizadaEm: dataHora,
 	},
 	required: ["id", "modelo", "ambiente", "serie", "numero", "situacao", "mensagens", "xmlDisponivel"],
+};
+
+const OpcoesNfce = {
+	type: "object",
+	properties: {
+		contingencia: {
+			type: "string",
+			enum: ["nunca", "automatica", "forcada"],
+			default: "nunca",
+			description:
+				"O que fazer quando a SEFAZ não responde. `automatica`: o cofre espera até 20 segundos e, sem resposta conclusiva, emite a nota em contingência offline (tipo de emissão 9), com número novo, e a devolve com `situacao: \"contingencia\"` para o caixa imprimir; enquanto a SEFAZ segue fora, as vendas seguintes saem direto em contingência. `forcada`: emite direto em contingência. `nunca`: devolve 502. O cofre transmite as notas pendentes sozinho quando a SEFAZ volta. Não entra na comparação de conteúdo da referência. O DANFCE da nota em contingência tem textos e vias próprios, e o prazo legal de transmissão é o fim do primeiro dia útil seguinte.",
+		},
+	},
 };
 
 const EmissaoNfse = {
@@ -171,7 +198,7 @@ export const CODIGOS_DE_ERRO: Record<string, { status: number; quando: string }>
 	inutilizacao_extinta: { status: 422, quando: "A UF não tem mais inutilização de numeração (SP, AC e BA)." },
 	host_nao_permitido: { status: 422, quando: "Falha interna: o cofre recusou transmitir para um endereço que não é do governo." },
 	certificado_do_cliente_invalido: { status: 422, quando: "O governo recusou o certificado na conexão." },
-	sem_resposta_conclusiva: { status: 502, quando: "A resposta do governo se perdeu ou não foi conclusiva. Na NF-e e NFC-e, chame /consultar; em qualquer documento, repetir com a mesma referência consulta antes de reenviar." },
+	sem_resposta_conclusiva: { status: 502, quando: "A resposta do governo se perdeu ou não foi conclusiva. Na NF-e e NFC-e, chame /consultar; em qualquer documento, repetir com a mesma referência consulta antes de reenviar. Na NFC-e, `contingencia: \"automatica\"` troca este erro por uma nota em contingência." },
 	sem_conexao: { status: 200, quando: "Só em GET /v1/sefaz/status, dentro de `mensagem.codigo`: não foi possível falar com a SEFAZ." },
 	erro_interno: { status: 500, quando: "Falha inesperada do cofre." },
 	cofre_nao_configurado: { status: 503, quando: "O segredo do cofre está ausente ou é fraco demais: a instalação não foi concluída." },
@@ -189,7 +216,11 @@ function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: un
 				summary: `Emite uma ${nome}`,
 				description: "O cofre reserva o número na série, monta e assina o XML, transmite e arquiva a nota autorizada. A série precisa estar cadastrada no cofre.",
 				requestBody: corpo(ref(pedido), exemplo),
-				responses: { "201": resposta("Autorizada.", emissao), "200": resposta("A referência já tinha uma nota: nada foi reenviado.", emissao), ...erros(400, 401, 403, 409, 422, 502) },
+				responses: {
+					"201": resposta(doc === "nfce" ? "Autorizada, ou emitida em contingência (`situacao`)." : "Autorizada.", emissao),
+					"200": resposta("A referência já tinha uma nota: nada foi reenviado.", emissao),
+					...erros(400, 401, 403, 409, 422, 502),
+				},
 			},
 			get: {
 				tags,
@@ -203,7 +234,7 @@ function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: un
 			post: {
 				tags,
 				summary: "Consulta a SEFAZ e fecha uma emissão sem resposta conclusiva",
-				description: "Para emissões em situação `indefinida`. Nas demais situações devolve o registro como está.",
+				description: "Para emissões em situação `indefinida`. Numa NFC-e em `contingencia`, tenta transmiti-la agora, sem esperar o agendador do cofre. Nas demais situações devolve o registro como está.",
 				parameters: [id],
 				responses: { "200": resposta("A emissão, atualizada quando a SEFAZ respondeu.", emissao), ...erros(401, 404, 409) },
 			},
@@ -342,7 +373,8 @@ export function contratoOpenApi(): Json {
 				},
 				Cabecalho,
 				PedidoNfe: { allOf: [ref("Cabecalho"), esquema(NfeInput)] },
-				PedidoNfce: { allOf: [ref("Cabecalho"), esquema(NfceInput)] },
+				OpcoesNfce,
+				PedidoNfce: { allOf: [ref("Cabecalho"), ref("OpcoesNfce"), esquema(NfceInput)] },
 				PedidoNfse: { allOf: [ref("Cabecalho"), esquema(NfseInput)] },
 				CancelamentoNfe: esquema(CancelamentoNfe),
 				CancelamentoNfse: esquema(CancelamentoInput),
@@ -380,6 +412,10 @@ export function contratoOpenApi(): Json {
 							},
 						},
 						producaoLiberada: { type: "boolean" },
+						contingencia: {
+							type: "object",
+							properties: { notasPendentes: { type: "integer", description: "NFC-e emitidas em contingência que ainda aguardam a transmissão à SEFAZ." } },
+						},
 						chave: { type: "object", properties: { escopo: { type: "string", enum: ["completo", "homologacao"] }, ambientes: { type: "array", items: AMBIENTE } } },
 						documentos: {
 							type: "object",

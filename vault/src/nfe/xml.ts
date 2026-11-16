@@ -25,6 +25,13 @@ export interface NfeContexto {
 	cNF: string;
 	/** Identificação do aplicativo emissor (verProc, até 20 caracteres). */
 	versaoAplicativo: string;
+	/**
+	 * Emissão em contingência offline (tpEmis 9): quando o emitente entrou em
+	 * contingência (dhCont) e por quê (xJust, 15 a 256 caracteres).
+	 */
+	contingencia?: { desde: string; justificativa: string };
+	/** Data de emissão já fixada: a nota em contingência reemitida não muda de data. */
+	dataEmissao?: string;
 	agora?: Date;
 }
 
@@ -294,8 +301,10 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 	const emit = pedido.emitente;
 	const uf = emit.endereco.uf;
 	const cUF = CODIGO_UF[uf] as string;
-	const dataEmissao = normalizarDataHora(pedido.dataEmissao ?? dataHoraNaUf(ctx.agora ?? new Date(), uf));
-	const chave = montarChave({ cUF, emissao: dataEmissao, cnpj: ctx.cnpj, modelo: pedido.modelo as Modelo, serie: ctx.serie, numero: ctx.numero, tpEmis: "1", cNF: ctx.cNF });
+	const dataEmissao = normalizarDataHora(ctx.dataEmissao ?? pedido.dataEmissao ?? dataHoraNaUf(ctx.agora ?? new Date(), uf));
+	// 1 = emissão normal; 9 = contingência offline da NFC-e. O tipo entra na chave.
+	const tpEmis = ctx.contingencia ? "9" : "1";
+	const chave = montarChave({ cUF, emissao: dataEmissao, cnpj: ctx.cnpj, modelo: pedido.modelo as Modelo, serie: ctx.serie, numero: ctx.numero, tpEmis, cNF: ctx.cNF });
 
 	const dest = pedido.destinatario;
 	const destino = nfce
@@ -310,11 +319,12 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 			tag("serie", ctx.serie) + tag("nNF", ctx.numero) + tag("dhEmi", dataEmissao) +
 			(nfce ? "" : tag("dhSaiEnt", (pedido as NfeInput).dataSaida ? normalizarDataHora((pedido as NfeInput).dataSaida as string) : undefined)) +
 			tag("tpNF", nfce || (pedido as NfeInput).tipo === "saida" ? "1" : "0") + tag("idDest", destino) +
-			tag("cMunFG", emit.endereco.codigoMunicipio) + tag("tpImp", nfce ? "4" : "1") + tag("tpEmis", "1") +
+			tag("cMunFG", emit.endereco.codigoMunicipio) + tag("tpImp", nfce ? "4" : "1") + tag("tpEmis", tpEmis) +
 			tag("cDV", chave.slice(43)) + tag("tpAmb", homologacao ? "2" : "1") + tag("finNFe", FINALIDADE[pedido.finalidade]) +
 			tag("indFinal", nfce || (pedido as NfeInput).consumidorFinal ? "1" : "0") + tag("indPres", presenca) +
 			(semPresenca ? tag("indIntermed", pedido.intermediador ? "1" : "0") : "") +
 			tag("procEmi", "0") + tag("verProc", ctx.versaoAplicativo) +
+			(ctx.contingencia ? tag("dhCont", normalizarDataHora(ctx.contingencia.desde)) + tag("xJust", ctx.contingencia.justificativa) : "") +
 			(pedido.notasReferenciadas ?? []).map((c) => grupo("NFref", tag("refNFe", c))).join(""),
 	);
 

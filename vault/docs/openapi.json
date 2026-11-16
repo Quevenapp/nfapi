@@ -2,7 +2,7 @@
 	"openapi": "3.1.0",
 	"info": {
 		"title": "Cofre NFapi",
-		"version": "0.3.2",
+		"version": "0.4.0",
 		"description": "API de emissão de notas fiscais do cofre NFapi, que roda na conta Cloudflare do emitente. Todas as chamadas levam uma chave de API criada na tela /setup do cofre. O cofre não calcula imposto: o sistema que chama informa bases, alíquotas e valores; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva. Erros vêm sempre como `{ \"erro\": { \"codigo\", \"mensagem\" } }`.",
 		"license": {
 			"name": "MIT"
@@ -382,7 +382,7 @@
 					"NF-e"
 				],
 				"summary": "Consulta a SEFAZ e fecha uma emissão sem resposta conclusiva",
-				"description": "Para emissões em situação `indefinida`. Nas demais situações devolve o registro como está.",
+				"description": "Para emissões em situação `indefinida`. Numa NFC-e em `contingencia`, tenta transmiti-la agora, sem esperar o agendador do cofre. Nas demais situações devolve o registro como está.",
 				"parameters": [
 					{
 						"name": "id",
@@ -829,7 +829,7 @@
 						}
 					},
 					"201": {
-						"description": "Autorizada.",
+						"description": "Autorizada, ou emitida em contingência (`situacao`).",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1025,7 +1025,7 @@
 					"NFC-e"
 				],
 				"summary": "Consulta a SEFAZ e fecha uma emissão sem resposta conclusiva",
-				"description": "Para emissões em situação `indefinida`. Nas demais situações devolve o registro como está.",
+				"description": "Para emissões em situação `indefinida`. Numa NFC-e em `contingencia`, tenta transmiti-la agora, sem esperar o agendador do cofre. Nas demais situações devolve o registro como está.",
 				"parameters": [
 					{
 						"name": "id",
@@ -2119,7 +2119,7 @@
 									},
 									"sem_resposta_conclusiva": {
 										"status": 502,
-										"quando": "A resposta do governo se perdeu ou não foi conclusiva. Na NF-e e NFC-e, chame /consultar; em qualquer documento, repetir com a mesma referência consulta antes de reenviar."
+										"quando": "A resposta do governo se perdeu ou não foi conclusiva. Na NF-e e NFC-e, chame /consultar; em qualquer documento, repetir com a mesma referência consulta antes de reenviar. Na NFC-e, `contingencia: \"automatica\"` troca este erro por uma nota em contingência."
 									},
 									"sem_conexao": {
 										"status": 200,
@@ -3584,10 +3584,28 @@
 					}
 				]
 			},
+			"OpcoesNfce": {
+				"type": "object",
+				"properties": {
+					"contingencia": {
+						"type": "string",
+						"enum": [
+							"nunca",
+							"automatica",
+							"forcada"
+						],
+						"default": "nunca",
+						"description": "O que fazer quando a SEFAZ não responde. `automatica`: o cofre espera até 20 segundos e, sem resposta conclusiva, emite a nota em contingência offline (tipo de emissão 9), com número novo, e a devolve com `situacao: \"contingencia\"` para o caixa imprimir; enquanto a SEFAZ segue fora, as vendas seguintes saem direto em contingência. `forcada`: emite direto em contingência. `nunca`: devolve 502. O cofre transmite as notas pendentes sozinho quando a SEFAZ volta. Não entra na comparação de conteúdo da referência. O DANFCE da nota em contingência tem textos e vias próprios, e o prazo legal de transmissão é o fim do primeiro dia útil seguinte."
+					}
+				}
+			},
 			"PedidoNfce": {
 				"allOf": [
 					{
 						"$ref": "#/components/schemas/Cabecalho"
+					},
+					{
+						"$ref": "#/components/schemas/OpcoesNfce"
 					},
 					{
 						"type": "object",
@@ -5517,13 +5535,14 @@
 						"enum": [
 							"processando",
 							"autorizada",
+							"contingencia",
 							"rejeitada",
 							"denegada",
 							"erro",
 							"indefinida",
 							"cancelada"
 						],
-						"description": "`indefinida`: a resposta do governo se perdeu; use POST .../consultar ou repita o pedido com a mesma referência. `erro`: barrada pelo cofre antes de transmitir."
+						"description": "`indefinida`: a resposta do governo se perdeu; use POST .../consultar ou repita o pedido com a mesma referência. `erro`: barrada pelo cofre antes de transmitir. `contingencia`: NFC-e emitida offline; vale para o consumidor, ainda sem protocolo, e o cofre a transmite quando a SEFAZ voltar."
 					},
 					"chaveAcesso": {
 						"type": [
@@ -5575,6 +5594,62 @@
 					"cartasCorrecao": {
 						"type": "integer"
 					},
+					"contingencia": {
+						"type": [
+							"object",
+							"null"
+						],
+						"description": "Só na NFC-e emitida em contingência offline; null nas demais.",
+						"properties": {
+							"pendente": {
+								"type": "boolean",
+								"description": "A nota ainda aguarda a transmissão à SEFAZ."
+							},
+							"desde": {
+								"type": [
+									"string",
+									"null"
+								],
+								"description": "Quando o emitente entrou em contingência (dhCont)."
+							},
+							"motivo": {
+								"type": [
+									"string",
+									"null"
+								]
+							},
+							"tentativasDeTransmissao": {
+								"type": "integer"
+							},
+							"ultimaTentativa": {
+								"type": [
+									"string",
+									"null"
+								]
+							},
+							"notaNormalEmConferencia": {
+								"type": [
+									"string",
+									"null"
+								],
+								"description": "Chave da NFC-e normal da mesma venda que ficou sem resposta: o cofre ainda vai conferi-la na SEFAZ."
+							},
+							"falhaNaConferencia": {
+								"type": [
+									"string",
+									"null"
+								],
+								"description": "A SEFAZ rejeitou o cancelamento da nota normal: precisa de ação do emitente."
+							},
+							"notaNormalCancelada": {
+								"type": [
+									"string",
+									"null"
+								],
+								"description": "Chave da NFC-e normal que acabou autorizada e foi cancelada por substituição (evento 110112)."
+							}
+						}
+					},
 					"mensagens": {
 						"type": "array",
 						"description": "Código e descrição devolvidos pelo governo (na NF-e e NFC-e, cStat e xMotivo) ou pelo cofre.",
@@ -5595,7 +5670,8 @@
 						}
 					},
 					"xmlDisponivel": {
-						"type": "boolean"
+						"type": "boolean",
+						"description": "Na contingência pendente, o XML é a nota assinada sem protocolo; depois de autorizada, o nfeProc."
 					},
 					"criadaEm": {
 						"type": "string",
@@ -5837,6 +5913,15 @@
 					},
 					"producaoLiberada": {
 						"type": "boolean"
+					},
+					"contingencia": {
+						"type": "object",
+						"properties": {
+							"notasPendentes": {
+								"type": "integer",
+								"description": "NFC-e emitidas em contingência que ainda aguardam a transmissão à SEFAZ."
+							}
+						}
 					},
 					"chave": {
 						"type": "object",

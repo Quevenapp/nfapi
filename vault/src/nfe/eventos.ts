@@ -42,6 +42,27 @@ export function montarCancelamentoNfe(ctx: EventoContexto, protocolo: string, ju
 	return evento(ctx, "110111", 1, tag("descEvento", "Cancelamento") + tag("nProt", protocolo) + tag("xJust", justificativa));
 }
 
+/**
+ * Evento 110112: cancelamento por substituição (NT 2018.004). Cancela a NFC-e
+ * normal que ficou sem resposta e depois se descobriu autorizada, quando a venda
+ * já foi documentada por uma NFC-e em contingência (`chaveSubstituta`).
+ */
+export function montarCancelamentoPorSubstituicao(
+	ctx: EventoContexto,
+	protocolo: string,
+	justificativa: string,
+	chaveSubstituta: string,
+	versaoAplicativo: string,
+): EventoMontado {
+	return evento(
+		ctx,
+		"110112",
+		1,
+		tag("descEvento", "Cancelamento por substituicao") + tag("cOrgaoAutor", ctx.chave.slice(0, 2)) + tag("tpAutor", "1") +
+			tag("verAplic", versaoAplicativo) + tag("nProt", protocolo) + tag("xJust", justificativa) + tag("chNFeRef", chaveSubstituta),
+	);
+}
+
 /** Evento 110110: carta de correção. A sequência cresce a cada carta da mesma nota. */
 export function montarCartaCorrecao(ctx: EventoContexto, sequencia: number, correcao: string): EventoMontado {
 	return evento(ctx, "110110", sequencia, tag("descEvento", "Carta de Correcao") + tag("xCorrecao", correcao) + tag("xCondUso", CONDICAO_DE_USO));

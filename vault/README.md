@@ -65,7 +65,21 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 - **Sem lacunas por rejeição.** Nota rejeitada não existe para a SEFAZ: o número volta para a série.
 - **UFs atendidas.** NF-e: SP e as UFs autorizadas pela SVRS (AC, AL, AP, CE, DF, ES, PA, PB, PI, RJ, RN, RO, RR, SC, SE, TO). NFC-e: SP. `GET /v1/cofre` devolve a lista da versão instalada.
 - **Reforma tributária.** O grupo de IBS e CBS (`impostos.ibsCbs`) já é exigido do regime normal em homologação; o cofre o repassa como informado.
-- **Ainda não há:** DANFE e DANFCE em PDF, contingência (offline e SVC) e eventos além de cancelamento e carta de correção.
+- **Ainda não há:** DANFE e DANFCE em PDF, contingência da NF-e (SVC) e eventos além de cancelamento e carta de correção.
+
+### Contingência da NFC-e
+
+Cobre o caso em que a SEFAZ não responde e a loja continua com internet. O certificado segue só no cofre: se a loja ficar sem internet, o caixa não alcança o cofre e não há emissão.
+
+No pedido de NFC-e, `"contingencia": "automatica"` faz o cofre esperar até 20 segundos pela SEFAZ e, sem resposta conclusiva, emitir a nota em contingência offline (tipo de emissão 9). A resposta vem com `situacao: "contingencia"`, a chave, o QR Code offline e sem protocolo: é o que o caixa imprime.
+
+- A nota em contingência usa um número novo. A nota normal que ficou sem resposta é conferida depois; se tiver sido autorizada, o cofre a cancela por substituição (evento 110112).
+- Enquanto a SEFAZ segue fora, as vendas seguintes saem direto em contingência, sem esperar.
+- A cada 5 minutos o cofre confere o status da SEFAZ e, quando ela volta, transmite as notas pendentes, o mesmo XML já assinado. `POST /v1/nfce/:id/consultar` tenta na hora, e `GET /v1/cofre` informa quantas notas aguardam.
+- Se a SEFAZ rejeitar a nota na transmissão, ela fica `rejeitada` com o motivo e mantém o número. O sistema corrige e reenvia com a mesma referência; a nota sai com o mesmo número e a mesma data.
+- `"contingencia": "forcada"` emite direto em contingência; o padrão, `"nunca"`, devolve 502.
+
+Obrigações de quem emite em contingência, que ficam com o sistema do caixa: imprimir o DANFCE com os dizeres "EMITIDA EM CONTINGÊNCIA" e "Pendente de autorização", guardar a via do estabelecimento (ou o XML, conforme a regra da UF) e respeitar o prazo legal de transmissão, que é o fim do primeiro dia útil seguinte.
 
 Um pedido de NFC-e:
 

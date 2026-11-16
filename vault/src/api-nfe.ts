@@ -17,6 +17,7 @@
 
 import type { Context, Hono } from "hono";
 import { z } from "zod";
+import { executarAgendado } from "./agendador";
 import { ambienteDoFiltro, autenticar, erro, iso, operacoes, problema } from "./api-nfse";
 import type { AppEnv, Ctx } from "./app";
 import { estadoDaAtualizacao } from "./atualizacao";
@@ -41,6 +42,31 @@ const Cabecalho = z.object({
 		.optional(),
 });
 
+/** Dados da emissão em contingência offline; null quando a nota saiu pelo caminho normal. */
+function contingenciaJson(e: banco.Emission) {
+	const c = e.extra.contingencia as { desde?: string; motivo?: string; tentativas?: number; ultimaTentativa?: string } | undefined;
+	if (!c) return null;
+	const substituida = e.extra.substituida as { chave?: string } | undefined;
+	const original = e.extra.original as { chave?: string; falha?: string } | undefined;
+	return {
+		/** A nota ainda aguarda a transmissão à SEFAZ? */
+		pendente: e.status === "contingencia",
+		desde: c.desde ?? null,
+		motivo: c.motivo ?? null,
+		tentativasDeTransmissao: c.tentativas ?? 0,
+		ultimaTentativa: c.ultimaTentativa ?? null,
+		/** Nota normal da mesma venda que ficou sem resposta e ainda será conferida. */
+		notaNormalEmConferencia: original?.chave ?? null,
+		/** Preenchido quando a conferência falhou e precisa de ação do emitente. */
+		falhaNaConferencia: original?.falha ?? null,
+		/** Nota normal que acabou autorizada e foi cancelada por substituição. */
+		notaNormalCancelada: substituida?.chave ?? null,
+	};
+}
+
+/** Na NFC-e, o pedido pode dizer o que fazer quando a SEFAZ não responde. */
+const OpcoesNfce = z.object({ contingencia: z.enum(["nunca", "automatica", "forcada"]).default("nunca") });
+
 export const nfeJson = (e: banco.Emission) => ({
 	id: e.id,
 	modelo: e.kind,
@@ -58,6 +84,7 @@ export const nfeJson = (e: banco.Emission) => ({
 	qrCode: typeof e.extra.qrCode === "string" ? e.extra.qrCode : null,
 	urlConsulta: typeof e.extra.urlConsulta === "string" ? e.extra.urlConsulta : null,
 	cartasCorrecao: typeof e.extra.cartas === "number" ? e.extra.cartas : 0,
+	contingencia: contingenciaJson(e),
 	/** Código e motivo devolvidos pela SEFAZ (cStat e xMotivo), ou o erro do cofre. */
 	mensagens: e.messages,
 	xmlDisponivel: e.documentKey !== null,
@@ -104,6 +131,8 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 			if (!pedido.success) return erro(c, 400, "requisicao_invalida", problema(pedido.error), { campo: pedido.error.issues[0]?.path.join(".") ?? null });
 			const { ambiente, referencia } = cabecalho.data;
 			if (chave.scope === "homologacao" && ambiente !== "homologacao") return somenteHomologacao(c);
+			const opcoes = doc === "nfce" ? OpcoesNfce.safeParse(corpo) : null;
+			if (opcoes && !opcoes.success) return erro(c, 400, "requisicao_invalida", problema(opcoes.error), { campo: "contingencia" });
 
 			const ops = await operacoes(c, makeTransport(c.env), `chave:${chave.id}`);
 			if (ops instanceof Response) return ops;
@@ -111,9 +140,12 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 				ambiente,
 				referencia,
 				pedido: { ...pedido.data, modelo: MODELO[doc] } as PedidoNfe,
+				contingencia: opcoes?.data?.contingencia,
 			});
 			switch (r.tipo) {
 				case "autorizada":
+				// Em contingência a nota vale para o consumidor (situacao "contingencia") e segue na fila.
+				case "contingencia":
 					return c.json(nfeJson(r.emission), r.nova ? 201 : 200);
 				case "conflito":
 					return erro(c, r.status, r.codigo, r.mensagem);
@@ -148,7 +180,7 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 			if (chave instanceof Response) return chave;
 			const emission = await buscar(c);
 			if (!emission) return inexistente(c);
-			if (emission.status !== "indefinida") return c.json(nfeJson(emission));
+			if (emission.status !== "indefinida" && emission.status !== "contingencia") return c.json(nfeJson(emission));
 			const ops = await operacoes(c, makeTransport(c.env), `chave:${chave.id}`);
 			if (ops instanceof Response) return ops;
 			return c.json(nfeJson(await sincronizarNfe(c.env.DB, ops, emission)));
@@ -231,6 +263,7 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 			producaoLiberada,
 			chave: { escopo: chave.scope, ambientes: chave.scope === "homologacao" || !producaoLiberada ? ["homologacao"] : ["homologacao", "producao"] },
 			documentos: { nfse: true, nfe: { ufs: ufsAtendidas("55") }, nfce: { ufs: ufsAtendidas("65") } },
+			contingencia: { notasPendentes: await banco.contarEmContingencia(c.env.DB) },
 		});
 	});
 
@@ -254,6 +287,12 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 	});
 
 	// ---------- Configuração do emitente (tela /setup) ----------
+
+	// Roda agora o trabalho que o agendador faz a cada 5 minutos: confere a SEFAZ e transmite a fila.
+	app.post("/admin/contingencia/processar", async (c) => {
+		const resumo = await executarAgendado(c.env, makeTransport(c.env));
+		return c.json({ resumo: resumo ?? { autorizadas: 0, rejeitadas: 0, aguardando: 0 }, notasPendentes: await banco.contarEmContingencia(c.env.DB) });
+	});
 
 	app.get("/admin/series", async (c) => {
 		const cert = await store.getCertificateInfo(c.env.DB);

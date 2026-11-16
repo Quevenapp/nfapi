@@ -1,6 +1,7 @@
 // Ponto de entrada do cofre no Cloudflare Workers.
 
 import { Container } from "@cloudflare/containers";
+import { executarAgendado } from "./agendador";
 import { type AppEnv, createApp } from "./app";
 import { ContainerTransport } from "./transport";
 
@@ -20,4 +21,10 @@ interface Env extends AppEnv {
 
 const app = createApp((env) => new ContainerTransport((env as Env).MTLS));
 
-export default { fetch: app.fetch } satisfies ExportedHandler<Env>;
+export default {
+	fetch: app.fetch,
+	// Cron Trigger: transmite as NFC-e em contingência quando a SEFAZ volta.
+	scheduled(_evento, env, ctx) {
+		ctx.waitUntil(executarAgendado(env, new ContainerTransport(env.MTLS)));
+	},
+} satisfies ExportedHandler<Env>;

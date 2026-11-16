@@ -11,9 +11,9 @@
 import { type Ambiente, type Autorizador, autorizadorNfe, temInutilizacao } from "../fiscal/dados";
 import type { Mensagem } from "../nfse";
 import { base64ParaTexto } from "../nfse";
-import { CODIGO_UF, type Modelo, gerarCodigoNumerico } from "../nfe/chave";
-import { montarCancelamentoNfe, montarCartaCorrecao, montarInutilizacao } from "../nfe/eventos";
-import { suplementoNfce } from "../nfe/qrcode";
+import { CODIGO_UF, type Modelo, dataHoraNaUf, gerarCodigoNumerico } from "../nfe/chave";
+import { montarCancelamentoNfe, montarCancelamentoPorSubstituicao, montarCartaCorrecao, montarInutilizacao } from "../nfe/eventos";
+import { suplementoNfce, suplementoNfceOffline } from "../nfe/qrcode";
 import type { CancelamentoNfe, CartaCorrecao, InutilizacaoInput, PedidoNfe } from "../nfe/schema";
 import {
 	type RespostaAutorizacao,
@@ -36,6 +36,7 @@ import {
 import { comSuplementoNfce, montarNfe } from "../nfe/xml";
 import { OperacaoError, type Operacoes } from "../operacoes";
 import { VAULT_VERSION } from "../protocol";
+import * as store from "../store";
 import * as banco from "./banco";
 
 const VERSAO_APLICATIVO = `NFapi-${VAULT_VERSION}`;
@@ -54,6 +55,8 @@ const NAO_TRANSMITIDO = new Set(["host_nao_permitido", "requisicao_invalida", "c
  * inutilizada): ele não volta para a série.
  */
 const NUMERO_OCUPADO = new Set(["204", "206", "218", "256", "539"]);
+/** O serviço de autorização está parado: a nota não foi processada. */
+const SERVICO_PARALISADO = new Set(["108", "109"]);
 
 const doErro = (err: OperacaoError): Mensagem => ({ codigo: err.code, descricao: err.message });
 const tpAmb = (ambiente: Ambiente) => (ambiente === "homologacao" ? "2" : "1");
@@ -61,13 +64,16 @@ const idLote = () => String(Date.now());
 
 export type ResultadoNfe =
 	| { tipo: "autorizada"; nova: boolean; emission: banco.Emission }
+	/** NFC-e emitida em contingência offline: vale para o consumidor e aguarda a transmissão à SEFAZ. */
+	| { tipo: "contingencia"; nova: boolean; emission: banco.Emission }
 	| { tipo: "conflito"; status: 409 | 422; codigo: string; mensagem: string }
 	| { tipo: "nao_autorizada"; status: 422 | 502; codigo: string; mensagem: string; emission: banco.Emission };
 
 const conflito = (codigo: string, mensagem: string, status: 409 | 422 = 409): ResultadoNfe => ({ tipo: "conflito", status, codigo, mensagem });
 
-async function chamar(ops: Operacoes, autorizador: Autorizador, servico: Servico, dados: string, ref: string) {
-	const res = await ops.transmit(requisicaoSoap(servico, autorizador.servicos[servico], dados, ref));
+async function chamar(ops: Operacoes, autorizador: Autorizador, servico: Servico, dados: string, ref: string, timeoutMs?: number) {
+	const requisicao = requisicaoSoap(servico, autorizador.servicos[servico], dados, ref);
+	const res = await ops.transmit(timeoutMs ? { ...requisicao, timeoutMs } : requisicao);
 	return { status: res.status, corpo: base64ParaTexto(res.bodyB64), journalKey: res.journalKey };
 }
 
@@ -168,10 +174,46 @@ async function retomar(d1: D1Database, ops: Operacoes, autorizador: Autorizador,
 	return { tipo: "resolvida", emission: await arquivar(d1, ops, emission, pendente, r) };
 }
 
+/**
+ * Contingência offline da NFC-e (tpEmis 9), para quando a SEFAZ não responde e
+ * a loja continua com internet: o cofre assina a nota, devolve para o caixa
+ * imprimir e transmite depois.
+ *
+ *   nunca       nunca entra em contingência (padrão).
+ *   automatica  entra se a SEFAZ não der resposta conclusiva.
+ *   forcada     emite direto em contingência.
+ */
+export type ModoContingencia = "nunca" | "automatica" | "forcada";
+
+/** Espera pela SEFAZ quando há a contingência como saída: o caixa não pode ficar parado. */
+const ESPERA_COM_CONTINGENCIA_MS = 20_000;
+/** Depois deste tempo sem conferir, uma nova emissão tenta de novo o caminho normal. */
+const VALIDADE_DO_ESTADO_MS = 10 * 60_000;
+
+interface EstadoContingencia {
+	/** Quando o emitente entrou em contingência (dhCont). */
+	desde: string;
+	motivo: string;
+	/** Última vez em que se constatou que a SEFAZ seguia sem responder. */
+	verificadoEm: number;
+}
+
+const chaveDoEstado = (ambiente: Ambiente, uf: string) => `contingencia_nfce_${ambiente}_${uf}`;
+
+async function lerEstado(d1: D1Database, ambiente: Ambiente, uf: string): Promise<EstadoContingencia | null> {
+	const valor = await store.getSetting(d1, chaveDoEstado(ambiente, uf));
+	if (!valor) return null;
+	try {
+		return JSON.parse(valor) as EstadoContingencia;
+	} catch {
+		return null;
+	}
+}
+
 export async function emitirNfe(
 	d1: D1Database,
 	ops: Operacoes,
-	{ ambiente, referencia, pedido }: { ambiente: Ambiente; referencia?: string; pedido: PedidoNfe },
+	{ ambiente, referencia, pedido, contingencia = "nunca" }: { ambiente: Ambiente; referencia?: string; pedido: PedidoNfe; contingencia?: ModoContingencia },
 ): Promise<ResultadoNfe> {
 	const kind = KIND[pedido.modelo];
 	const nome = NOME[kind];
@@ -180,6 +222,8 @@ export async function emitirNfe(
 	const uf = pedido.emitente.endereco.uf;
 	const autorizador = autorizadorNfe(pedido.modelo, uf, ambiente);
 	if (!autorizador) return conflito("uf_nao_suportada", `A emissão de ${nome} para a UF ${uf} ainda não está disponível neste cofre.`, 422);
+	// A contingência offline só existe na NFC-e.
+	const modo: ModoContingencia = kind === "nfce" ? contingencia : "nunca";
 
 	const base = { docId: cnpj, kind, environment: ambiente };
 	const hash = await banco.hashPedido(pedido);
@@ -190,6 +234,7 @@ export async function emitirNfe(
 		return conflito(banco.REFERENCIA_DIVERGENTE.codigo, banco.REFERENCIA_DIVERGENTE.mensagem);
 	}
 	if (emission?.status === "autorizada" || emission?.status === "cancelada") return { tipo: "autorizada", nova: false, emission };
+	if (emission?.status === "contingencia") return { tipo: "contingencia", nova: false, emission };
 	if (emission?.status === "denegada") {
 		return { tipo: "nao_autorizada", status: 422, codigo: "nfe_denegada", mensagem: emission.messages[0]?.descricao ?? "Uso denegado.", emission };
 	}
@@ -218,9 +263,12 @@ export async function emitirNfe(
 			emission = r.emission;
 		}
 
-		// ----- Série e número -----
+		// Nota emitida em contingência e rejeitada na transmissão: a correção mantém série, número e datas.
+		const anterior = emission?.status === "rejeitada" ? (emission.extra.contingencia as { desde: string; motivo: string } | undefined) : undefined;
+
+		// ----- Série -----
 		const cadastradas = (await banco.listSeries(d1, cnpj)).filter((s) => s.kind === kind && s.environment === ambiente);
-		const serie = pedido.serie ?? (cadastradas.length === 1 ? Number(cadastradas[0]?.serie) : undefined);
+		const serie = anterior && emission ? Number(emission.serie) : (pedido.serie ?? (cadastradas.length === 1 ? Number(cadastradas[0]?.serie) : undefined));
 		if (serie === undefined) {
 			return conflito(
 				cadastradas.length === 0 ? "serie_nao_cadastrada" : "serie_obrigatoria",
@@ -231,12 +279,109 @@ export async function emitirNfe(
 			);
 		}
 		const serieKey = { ...base, serie: String(serie) };
-		const numero = await reservarNumero(d1, serieKey);
-		if (numero === null) {
-			return conflito("serie_nao_cadastrada", `A série ${serie} de ${nome} não está cadastrada para ${ambiente}. Cadastre-a na tela do cofre.`, 422);
+		const serieAusente = () => conflito("serie_nao_cadastrada", `A série ${serie} de ${nome} não está cadastrada para ${ambiente}. Cadastre-a na tela do cofre.`, 422);
+
+		/** Grava a emissão (ou atualiza a que já existe) com o número e a chave desta tentativa. */
+		const registrar = async (numero: number, chave: string, status: "processando" | "contingencia", extra: Record<string, unknown>): Promise<boolean> => {
+			if (emission) {
+				emission = await banco.updateEmission(d1, emission.id, { status, number: numero, accessKey: chave, documentId: `NFe${chave}`, messages: [], requestHash: hash, extra });
+				return true;
+			}
+			const now = Date.now();
+			const nova: banco.Emission = {
+				id: banco.newId(kind === "nfe" ? "nfe" : "nfc"), docId: cnpj, kind, environment: ambiente, reference: referencia ?? null,
+				serie: String(serie), number: numero, documentId: `NFe${chave}`, status, accessKey: chave,
+				fiscalNumber: null, messages: [], documentKey: null, journalKey: null, requestHash: hash, protocol: null, extra,
+				createdAt: now, updatedAt: now,
+			};
+			if (!(await banco.insertEmission(d1, nova))) return false;
+			emission = await banco.updateEmission(d1, nova.id, { accessKey: chave });
+			return true;
+		};
+
+		/** Emite a NFC-e em contingência offline e a deixa na fila de transmissão. */
+		const emContingencia = async (
+			motivo: string,
+			opcoes: {
+				/** A nota normal que ficou sem resposta e precisa ser conferida depois. */
+				original?: Record<string, unknown>;
+				/** Reemissão de uma nota em contingência rejeitada: mesmo número e mesmas datas. */
+				refazer?: { numero: number; dataEmissao: string; desde: string };
+				/** A SEFAZ acabou de falhar (e não só o estado guardado diz isso). */
+				constatado?: boolean;
+			} = {},
+		): Promise<ResultadoNfe> => {
+			if (!autorizador.nfce) return conflito("uf_nao_suportada", `A contingência de NFC-e para a UF ${uf} ainda não está disponível neste cofre.`, 422);
+			const numero = opcoes.refazer?.numero ?? (await reservarNumero(d1, serieKey));
+			if (numero === null) return serieAusente();
+
+			const guardado = await lerEstado(d1, ambiente, uf);
+			const estado: EstadoContingencia = {
+				desde: guardado?.desde ?? dataHoraNaUf(new Date(), uf),
+				motivo: guardado?.motivo ?? motivo,
+				verificadoEm: opcoes.constatado || !guardado ? Date.now() : guardado.verificadoEm,
+			};
+			if (!opcoes.refazer) await store.setSetting(d1, chaveDoEstado(ambiente, uf), JSON.stringify(estado));
+			const desde = opcoes.refazer?.desde ?? estado.desde;
+
+			const montada = montarNfe(pedido, {
+				ambiente, cnpj, serie, numero, cNF: gerarCodigoNumerico(numero), versaoAplicativo: VERSAO_APLICATIVO,
+				contingencia: { desde, justificativa: motivo }, dataEmissao: opcoes.refazer?.dataEmissao,
+			});
+			let assinada: string;
+			let supl: { qrCode: string; urlChave: string };
+			try {
+				supl = await suplementoNfceOffline(
+					montada.chave, ambiente, autorizador.nfce,
+					{ dataEmissao: montada.dataEmissao, total: montada.total, destinatario: pedido.destinatario },
+					(campos) => ops.assinarQrCodeOffline(campos),
+				);
+				assinada = (await ops.sign({ xml: comSuplementoNfce(montada.xml, supl.qrCode, supl.urlChave), tag: "infNFe", profile: "rsa-sha1" })).xml;
+			} catch (err) {
+				if (!(err instanceof OperacaoError)) throw err;
+				if (!opcoes.refazer) await banco.devolverNumero(d1, serieKey, numero);
+				return emission ? await encerrar(422, "erro", err.code, [doErro(err)]) : conflito(err.code, err.message, 422);
+			}
+
+			const extra: Record<string, unknown> = {
+				valor: montada.total, uf, emitidaEm: montada.dataEmissao, qrCode: supl.qrCode, urlConsulta: supl.urlChave,
+				contingencia: { desde, motivo, tentativas: 0 },
+				...(opcoes.original ? { original: opcoes.original } : {}),
+			};
+			if (!(await registrar(numero, montada.chave, "contingencia", extra))) {
+				await banco.devolverNumero(d1, serieKey, numero);
+				return conflito("emissao_em_andamento", "A referência acabou de ser registrada por outro pedido.");
+			}
+			const e = emission as unknown as banco.Emission;
+			// Enquanto a SEFAZ não autoriza, o arquivo da nota é o XML assinado, sem protocolo.
+			const destino = `${pasta(kind, ambiente, e.createdAt)}/${montada.chave}-nfe.xml`;
+			await ops.putDocument(destino, assinada, {
+				contentType: "application/xml",
+				meta: { tipo: kind, chaveAcesso: montada.chave, emissao: e.id, ambiente, serie: e.serie, numero, valor: montada.total, protocolo: null, situacao: "contingencia", emitidaEm: new Date().toISOString() },
+			});
+			emission = await banco.updateEmission(d1, e.id, { documentKey: destino });
+			return { tipo: "contingencia", nova: true, emission };
+		};
+
+		if (anterior && emission) {
+			const refeita = await emContingencia(anterior.motivo, {
+				refazer: { numero: emission.number, dataEmissao: String(emission.extra.emitidaEm), desde: anterior.desde },
+				original: emission.extra.original as Record<string, unknown> | undefined,
+			});
+			if (refeita.tipo !== "contingencia") return refeita;
+			return resultadoDaTransmissao(await transmitirContingencia(d1, ops, refeita.emission), nome);
 		}
 
-		// ----- XML -----
+		// ----- Entrada direta em contingência -----
+		if (modo === "forcada") return await emContingencia("Contingencia solicitada pelo sistema emissor");
+		if (modo === "automatica") {
+			const estado = await lerEstado(d1, ambiente, uf);
+			if (estado && Date.now() - estado.verificadoEm < VALIDADE_DO_ESTADO_MS) return await emContingencia(estado.motivo);
+		}
+
+		// ----- Número e XML -----
+		const numero = await reservarNumero(d1, serieKey);
+		if (numero === null) return serieAusente();
 		const montada = montarNfe(pedido, { ambiente, cnpj, serie, numero, cNF: gerarCodigoNumerico(numero), versaoAplicativo: VERSAO_APLICATIVO });
 		let xml = montada.xml;
 		const extra: Record<string, unknown> = { valor: montada.total, uf, emitidaEm: montada.dataEmissao };
@@ -246,26 +391,11 @@ export async function emitirNfe(
 			extra.qrCode = supl.qrCode;
 			extra.urlConsulta = supl.urlChave;
 		}
-
-		if (emission) {
-			emission = await banco.updateEmission(d1, emission.id, {
-				status: "processando", number: numero, accessKey: montada.chave, documentId: `NFe${montada.chave}`,
-				messages: [], requestHash: hash, extra,
-			});
-		} else {
-			const now = Date.now();
-			emission = {
-				id: banco.newId(kind === "nfe" ? "nfe" : "nfc"), docId: cnpj, kind, environment: ambiente, reference: referencia ?? null,
-				serie: String(serie), number: numero, documentId: `NFe${montada.chave}`, status: "processando", accessKey: montada.chave,
-				fiscalNumber: null, messages: [], documentKey: null, journalKey: null, requestHash: hash, protocol: null, extra,
-				createdAt: now, updatedAt: now,
-			};
-			if (!(await banco.insertEmission(d1, emission))) {
-				await banco.devolverNumero(d1, serieKey, numero);
-				return conflito("emissao_em_andamento", "A referência acabou de ser registrada por outro pedido.");
-			}
-			await banco.updateEmission(d1, emission.id, { accessKey: montada.chave });
+		if (!(await registrar(numero, montada.chave, "processando", extra))) {
+			await banco.devolverNumero(d1, serieKey, numero);
+			return conflito("emissao_em_andamento", "A referência acabou de ser registrada por outro pedido.");
 		}
+		let atual = emission as unknown as banco.Emission;
 
 		// ----- Assinar e guardar a cópia de trabalho -----
 		let assinada: string;
@@ -275,48 +405,55 @@ export async function emitirNfe(
 			if (!(err instanceof OperacaoError)) throw err;
 			return await encerrar(422, "erro", err.code, [doErro(err)], { devolver: true });
 		}
-		const pendente = `${pasta(kind, ambiente, emission.createdAt)}/${montada.chave}-enviada.xml`;
-		await ops.putDocument(pendente, assinada, { contentType: "application/xml", meta: { tipo: "enviada", emissao: emission.id } });
-		emission = await banco.updateEmission(d1, emission.id, { extra: { ...extra, pendente } });
+		const pendente = `${pasta(kind, ambiente, atual.createdAt)}/${montada.chave}-enviada.xml`;
+		await ops.putDocument(pendente, assinada, { contentType: "application/xml", meta: { tipo: "enviada", emissao: atual.id } });
+		atual = emission = await banco.updateEmission(d1, atual.id, { extra: { ...extra, pendente } });
+		// A nota normal que pode ter chegado à SEFAZ: a contingência a confere depois.
+		const original = { chave: montada.chave, numero, pendente };
 
 		// ----- Transmitir -----
 		let resposta: RespostaAutorizacao;
 		let journalKey: string | undefined;
 		try {
-			const res = await chamar(ops, autorizador, "autorizacao", enviNFe(assinada, idLote()), emission.id);
+			const res = await chamar(ops, autorizador, "autorizacao", enviNFe(assinada, idLote()), atual.id, modo === "automatica" ? ESPERA_COM_CONTINGENCIA_MS : undefined);
 			journalKey = res.journalKey;
 			resposta = lerRespostaAutorizacao(res.status, res.corpo, montada.chave);
 			for (let i = 0; resposta.tipo === "em_processamento" && i < ajustes.tentativasRecibo; i++) {
 				await new Promise((resolve) => setTimeout(resolve, ajustes.esperaReciboMs));
-				const ret = await chamar(ops, autorizador, "retAutorizacao", consReciNFe(tpAmb(ambiente), resposta.recibo), `${emission.id}:recibo`);
+				const ret = await chamar(ops, autorizador, "retAutorizacao", consReciNFe(tpAmb(ambiente), resposta.recibo), `${atual.id}:recibo`);
 				resposta = lerRespostaAutorizacao(ret.status, ret.corpo, montada.chave);
 			}
 		} catch (err) {
 			if (!(err instanceof OperacaoError)) throw err;
-			return NAO_TRANSMITIDO.has(err.code)
-				? await encerrar(422, "erro", err.code, [doErro(err)], { devolver: true })
-				: await semResposta(doErro(err));
+			if (NAO_TRANSMITIDO.has(err.code)) return await encerrar(422, "erro", err.code, [doErro(err)], { devolver: true });
+			if (modo === "automatica") return await emContingencia(`Sem resposta da SEFAZ na autorizacao (${err.code})`, { original, constatado: true });
+			return await semResposta(doErro(err));
 		}
 
 		if (resposta.tipo === "autorizada") {
-			return { tipo: "autorizada", nova: true, emission: await arquivar(d1, ops, emission, assinada, resposta, journalKey) };
+			return { tipo: "autorizada", nova: true, emission: await arquivar(d1, ops, atual, assinada, resposta, journalKey) };
 		}
 		if (resposta.tipo === "denegada") {
-			const negada = await arquivar(d1, ops, emission, assinada, resposta, journalKey);
+			const negada = await arquivar(d1, ops, atual, assinada, resposta, journalKey);
 			return { tipo: "nao_autorizada", status: 422, codigo: "nfe_denegada", mensagem: resposta.mensagem.descricao, emission: negada };
 		}
 		if (resposta.tipo === "rejeitada") {
 			// 204: esta mesma chave já foi autorizada (uma resposta anterior se perdeu).
 			if (resposta.mensagem.codigo === "204") {
-				const r = await retomar(d1, ops, autorizador, emission);
+				const r = await retomar(d1, ops, autorizador, atual);
 				if (r.tipo === "resolvida") return { tipo: "autorizada", nova: true, emission: r.emission };
 			}
 			await ops.removeDocument(pendente).catch(() => undefined);
+			// 108 e 109: o serviço está paralisado. A nota não foi processada; é o caso da contingência.
+			if (modo === "automatica" && SERVICO_PARALISADO.has(resposta.mensagem.codigo)) {
+				return await emContingencia(`Servico de autorizacao da SEFAZ paralisado (cStat ${resposta.mensagem.codigo})`, { constatado: true });
+			}
 			return await encerrar(422, "rejeitada", "nfe_rejeitada", [resposta.mensagem], {
 				journalKey,
 				devolver: !NUMERO_OCUPADO.has(resposta.mensagem.codigo),
 			});
 		}
+		if (modo === "automatica") return await emContingencia("Sem resposta conclusiva da SEFAZ na autorizacao", { original, constatado: true });
 		const detalhe = resposta.tipo === "em_processamento" ? "A SEFAZ recebeu o lote, mas ainda não o processou. Repita o pedido com a mesma referência." : resposta.detalhe;
 		return await semResposta({ codigo: "sem_resposta_conclusiva", descricao: detalhe }, journalKey);
 	} catch (err) {
@@ -326,8 +463,179 @@ export async function emitirNfe(
 	}
 }
 
-/** Consulta a SEFAZ para fechar uma emissão que ficou sem resposta conclusiva. */
+function resultadoDaTransmissao(emission: banco.Emission, nome: string): ResultadoNfe {
+	if (emission.status === "autorizada") return { tipo: "autorizada", nova: true, emission };
+	if (emission.status === "contingencia") return { tipo: "contingencia", nova: true, emission };
+	const mensagem = emission.messages[0]?.descricao ?? `A ${nome} não foi autorizada.`;
+	return { tipo: "nao_autorizada", status: 422, codigo: emission.status === "denegada" ? "nfe_denegada" : "nfe_rejeitada", mensagem, emission };
+}
+
+/**
+ * Transmite à SEFAZ uma NFC-e emitida em contingência: o mesmo XML assinado,
+ * sem alteração. Devolve a emissão como ficou.
+ */
+export async function transmitirContingencia(d1: D1Database, ops: Operacoes, emission: banco.Emission): Promise<banco.Emission> {
+	if (emission.status !== "contingencia" || !emission.accessKey || !emission.documentKey) return emission;
+	const autorizador = autorizadorNfe(MODELO[emission.kind as "nfe" | "nfce"], String(emission.extra.uf ?? ""), emission.environment);
+	const assinada = await ops.getDocument(emission.documentKey);
+	if (!autorizador || !assinada) return emission;
+
+	const contingencia = (emission.extra.contingencia ?? {}) as Record<string, unknown>;
+	/** Registra a tentativa; a nota continua na fila, a menos que o `patch` diga outra coisa. */
+	const tentativa = (patch: Parameters<typeof banco.updateEmission>[2]) =>
+		banco.updateEmission(d1, emission.id, {
+			extra: { ...emission.extra, contingencia: { ...contingencia, tentativas: Number(contingencia.tentativas ?? 0) + 1, ultimaTentativa: new Date().toISOString() } },
+			...patch,
+		});
+
+	let resposta: RespostaAutorizacao | Awaited<ReturnType<typeof lerRespostaConsulta>>;
+	let journalKey: string | undefined;
+	try {
+		const res = await chamar(ops, autorizador, "autorizacao", enviNFe(assinada, idLote()), `${emission.id}:contingencia`);
+		journalKey = res.journalKey;
+		resposta = lerRespostaAutorizacao(res.status, res.corpo, emission.accessKey);
+		// 204: a nota já está na SEFAZ (uma transmissão anterior chegou e a resposta se perdeu).
+		if (resposta.tipo === "rejeitada" && resposta.mensagem.codigo === "204") {
+			const consulta = await chamar(ops, autorizador, "consulta", consSitNFe(tpAmb(emission.environment), emission.accessKey), `${emission.id}:consulta`);
+			const lida = lerRespostaConsulta(consulta.status, consulta.corpo, emission.accessKey);
+			if (lida.tipo === "autorizada" || lida.tipo === "denegada") resposta = lida;
+		}
+	} catch (err) {
+		if (!(err instanceof OperacaoError)) throw err;
+		return tentativa({ messages: [doErro(err)] });
+	}
+
+	if (resposta.tipo === "autorizada" || resposta.tipo === "denegada") return arquivar(d1, ops, emission, assinada, resposta, journalKey);
+	if (resposta.tipo === "rejeitada" && !SERVICO_PARALISADO.has(resposta.mensagem.codigo)) {
+		// Rejeitada: o número continua sendo desta nota, que precisa ser corrigida e
+		// reenviada com a mesma referência (a contingência não admite outro número).
+		return tentativa({ status: "rejeitada", messages: [resposta.mensagem], ...(journalKey ? { journalKey } : {}) });
+	}
+	const detalhe: Mensagem =
+		resposta.tipo === "rejeitada"
+			? resposta.mensagem
+			: { codigo: "sem_resposta_conclusiva", descricao: "detalhe" in resposta ? resposta.detalhe : "A SEFAZ ainda não deu resposta conclusiva." };
+	return tentativa({ messages: [detalhe] });
+}
+
+/**
+ * Confere a NFC-e normal que ficou sem resposta antes de a venda ser documentada
+ * em contingência. Se ela acabou autorizada, a venda tem duas notas: a normal é
+ * cancelada por substituição (evento 110112), apontando para a de contingência.
+ */
+async function resolverOriginal(d1: D1Database, ops: Operacoes, emission: banco.Emission): Promise<banco.Emission> {
+	const original = emission.extra.original as { chave?: string; pendente?: string; falha?: string } | undefined;
+	if (!original?.chave || original.falha || emission.status !== "autorizada" || !emission.accessKey) return emission;
+	const autorizador = autorizadorNfe(MODELO[emission.kind as "nfe" | "nfce"], String(emission.extra.uf ?? ""), emission.environment);
+	if (!autorizador) return emission;
+
+	const encerrada = async (registro: Record<string, unknown> = {}) => {
+		if (original.pendente) await ops.removeDocument(original.pendente).catch(() => undefined);
+		const { original: _resolvida, ...resto } = emission.extra;
+		return banco.updateEmission(d1, emission.id, { extra: { ...resto, ...registro } });
+	};
+	try {
+		const consulta = await chamar(ops, autorizador, "consulta", consSitNFe(tpAmb(emission.environment), original.chave), `${emission.id}:original`);
+		const r = lerRespostaConsulta(consulta.status, consulta.corpo, original.chave);
+		if (r.tipo === "nao_consta" || r.tipo === "cancelada" || r.tipo === "denegada") return await encerrada();
+		if (r.tipo !== "autorizada") return emission;
+
+		const evento = montarCancelamentoPorSubstituicao(
+			{ ambiente: emission.environment, cnpj: emission.docId, chave: original.chave },
+			r.protocolo,
+			"NFC-e substituida por nota emitida em contingencia",
+			emission.accessKey,
+			VERSAO_APLICATIVO,
+		);
+		const assinado = (await ops.sign({ xml: evento.xml, tag: "infEvento", profile: "rsa-sha1" })).xml;
+		const res = await chamar(ops, autorizador, "evento", envEvento(assinado, idLote()), `${emission.id}:substituicao`);
+		const lido = lerRespostaEventoNfe(res.status, res.corpo);
+		if (lido.tipo === "registrado") {
+			await ops.putDocument(`${pasta(emission.kind, emission.environment, emission.createdAt)}/${original.chave}-cancelamento-substituicao.xml`, procEventoNFe(assinado, lido.retEvento), {
+				contentType: "application/xml",
+				meta: { tipo: "cancelamento_substituicao", chaveAcesso: emission.accessKey, substituida: original.chave, emissao: emission.id, protocolo: lido.protocolo },
+			});
+		}
+		if (lido.tipo === "registrado" || lido.tipo === "duplicado") {
+			return await encerrada({ substituida: { chave: original.chave, canceladaEm: new Date().toISOString() } });
+		}
+		if (lido.tipo === "rejeitado") {
+			// Sem repetir em laço: fica registrado para o emitente resolver.
+			const falha = `[${lido.mensagem.codigo}] ${lido.mensagem.descricao}`;
+			return banco.updateEmission(d1, emission.id, { extra: { ...emission.extra, original: { ...original, falha } } });
+		}
+		return emission;
+	} catch (err) {
+		if (!(err instanceof OperacaoError)) throw err;
+		return emission;
+	}
+}
+
+export interface ResumoPendencias {
+	/** Notas autorizadas nesta passada. */
+	autorizadas: number;
+	/** Notas rejeitadas na transmissão: aguardam correção pelo sistema emissor. */
+	rejeitadas: number;
+	/** Notas que continuam na fila (a SEFAZ segue sem responder). */
+	aguardando: number;
+}
+
+/**
+ * Trabalho periódico da contingência: confere se a SEFAZ voltou, transmite as
+ * notas em contingência e resolve as notas normais que ficaram sem resposta.
+ * Antes de transmitir, consulta o status do serviço uma vez por UF, para não
+ * insistir contra um serviço parado.
+ */
+export async function processarPendencias(d1: D1Database, ops: Operacoes, limite = 25): Promise<ResumoPendencias> {
+	const resumo: ResumoPendencias = { autorizadas: 0, rejeitadas: 0, aguardando: 0 };
+	const emOperacao = new Map<string, boolean>();
+	const conferir = async (ambiente: Ambiente, uf: string): Promise<boolean> => {
+		const grupo = `${ambiente}:${uf}`;
+		const conhecido = emOperacao.get(grupo);
+		if (conhecido !== undefined) return conhecido;
+		let ok = false;
+		try {
+			ok = (await statusSefaz(ops, "65", uf, ambiente))?.emOperacao === true;
+		} catch (err) {
+			if (!(err instanceof OperacaoError)) throw err;
+		}
+		emOperacao.set(grupo, ok);
+		const estado = await lerEstado(d1, ambiente, uf);
+		// A SEFAZ voltou: as próximas notas saem pelo caminho normal.
+		if (estado) await store.setSetting(d1, chaveDoEstado(ambiente, uf), ok ? "" : JSON.stringify({ ...estado, verificadoEm: Date.now() }));
+		return ok;
+	};
+
+	for (const chave of await store.listSettingKeys(d1, "contingencia_nfce_")) {
+		const [ambiente, uf] = chave.slice("contingencia_nfce_".length).split("_");
+		if ((ambiente === "homologacao" || ambiente === "producao") && uf) await conferir(ambiente, uf);
+	}
+
+	for (const emission of await banco.listPendentesDeContingencia(d1, limite)) {
+		if (!(await conferir(emission.environment, String(emission.extra.uf ?? "")))) {
+			resumo.aguardando++;
+			continue;
+		}
+		const eraContingencia = emission.status === "contingencia";
+		let atual = eraContingencia ? await transmitirContingencia(d1, ops, emission) : emission;
+		if (atual.status === "autorizada") {
+			if (eraContingencia) resumo.autorizadas++;
+			atual = await resolverOriginal(d1, ops, atual);
+		} else if (atual.status === "rejeitada") resumo.rejeitadas++;
+		else if (atual.status === "contingencia") resumo.aguardando++;
+	}
+	return resumo;
+}
+
+/**
+ * Consulta a SEFAZ para fechar uma emissão que ficou sem resposta conclusiva,
+ * ou tenta transmitir uma nota que está em contingência.
+ */
 export async function sincronizarNfe(d1: D1Database, ops: Operacoes, emission: banco.Emission): Promise<banco.Emission> {
+	if (emission.status === "contingencia") {
+		const atual = await transmitirContingencia(d1, ops, emission);
+		return atual.status === "autorizada" ? resolverOriginal(d1, ops, atual) : atual;
+	}
 	if (emission.status !== "indefinida" || !emission.accessKey) return emission;
 	const autorizador = autorizadorNfe(MODELO[emission.kind as "nfe" | "nfce"], String(emission.extra.uf ?? ""), emission.environment);
 	if (!autorizador) return emission;
@@ -365,6 +673,9 @@ async function registrarEvento(ops: Operacoes, emission: banco.Emission, evento:
 
 export async function cancelarNfe(d1: D1Database, ops: Operacoes, emission: banco.Emission, input: CancelamentoNfe): Promise<ResultadoEvento> {
 	if (emission.status === "cancelada") return { ok: true, emission, repetido: true };
+	if (emission.status === "contingencia") {
+		return falha(409, "nfe_nao_autorizada", [], "A nota está em contingência: só pode ser cancelada depois de autorizada pela SEFAZ.");
+	}
 	if (emission.status !== "autorizada" || !emission.accessKey || !emission.protocol) {
 		return falha(409, "nfe_nao_autorizada", [], "Só é possível cancelar uma nota autorizada.");
 	}

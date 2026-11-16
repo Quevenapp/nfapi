@@ -6,6 +6,9 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
+	// A cada 5 minutos: se houver NFC-e em contingência, confere a SEFAZ e transmite a fila.
+	"triggers": { "crons": ["*/5 * * * *"] },
+
 	// Segredo obrigatório: o deploy falha se não estiver definido.
 	"secrets": { "required": ["VAULT_SECRET"] },
 

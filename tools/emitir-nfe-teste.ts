@@ -18,6 +18,8 @@
 //   --numero <n>                número da nota (padrão: 1)
 //   --carta "<texto>"           depois de autorizada, registra uma carta de correção (só NF-e)
 //   --cancelar-depois "<just>"  depois de autorizada, cancela a nota
+//   --contingencia              NFC-e em contingência offline (tpEmis 9), transmitida em seguida:
+//                               serve para a SEFAZ conferir a assinatura do QR Code offline
 //   --nao-enviar                monta e assina o XML, grava em tools/saida e para
 //   --sim                       não pede confirmação antes de enviar
 //
@@ -30,9 +32,9 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { autorizadorNfe } from "../vault/src/fiscal/dados.ts";
-import { CODIGO_UF, gerarCodigoNumerico } from "../vault/src/nfe/chave.ts";
+import { CODIGO_UF, dataHoraNaUf, gerarCodigoNumerico } from "../vault/src/nfe/chave.ts";
 import { montarCancelamentoNfe, montarCartaCorrecao } from "../vault/src/nfe/eventos.ts";
-import { suplementoNfce } from "../vault/src/nfe/qrcode.ts";
+import { assinarRsaSha1, suplementoNfce, suplementoNfceOffline } from "../vault/src/nfe/qrcode.ts";
 import { NfceInput, NfeInput, type PedidoNfe } from "../vault/src/nfe/schema.ts";
 import {
 	type Servico,
@@ -165,7 +167,7 @@ interface Nota {
 	resumo: string;
 }
 
-function prepararNota(arquivo: string, nfce: boolean, numero: number): Nota {
+async function prepararNota(arquivo: string, nfce: boolean, numero: number, contingencia = false): Promise<Nota> {
 	let bruto: unknown;
 	try {
 		bruto = JSON.parse(fs.readFileSync(arquivo, "utf8").replace(/^﻿/, ""));
@@ -183,15 +185,25 @@ function prepararNota(arquivo: string, nfce: boolean, numero: number): Nota {
 	const autorizador = autorizadorNfe(modelo, uf, AMBIENTE);
 	if (!autorizador) sair(`A UF ${uf} ainda não tem autorizador configurado para o modelo ${modelo}.`);
 	const serie = pedido.serie ?? 1;
-	const montada = montarNfe(pedido, { ambiente: AMBIENTE, cnpj: pedido.emitente.cnpj ?? cert.holder.id, serie, numero, cNF: gerarCodigoNumerico(numero), versaoAplicativo: "NFapi-teste" });
+	const montada = montarNfe(pedido, {
+		ambiente: AMBIENTE,
+		cnpj: pedido.emitente.cnpj ?? cert.holder.id,
+		serie,
+		numero,
+		cNF: gerarCodigoNumerico(numero),
+		versaoAplicativo: "NFapi-teste",
+		...(contingencia ? { contingencia: { desde: dataHoraNaUf(new Date(), uf), justificativa: "Teste de contingencia offline do NFapi" } } : {}),
+	});
 	let xml = montada.xml;
 	if (nfce && autorizador.nfce) {
-		const supl = suplementoNfce(montada.chave, AMBIENTE, autorizador.nfce);
+		const supl = contingencia
+			? await suplementoNfceOffline(montada.chave, AMBIENTE, autorizador.nfce, { dataEmissao: montada.dataEmissao, total: montada.total, destinatario: pedido.destinatario }, (texto) => assinarRsaSha1(cert.privateKeyPem, texto))
+			: suplementoNfce(montada.chave, AMBIENTE, autorizador.nfce);
 		xml = comSuplementoNfce(xml, supl.qrCode, supl.urlChave);
 	}
 	const assinada = assinar(xml, "infNFe");
 	fs.writeFileSync(path.join(SAIDA, `${montada.chave}-enviada.xml`), assinada);
-	const resumo = `${nfce ? "NFC-e (modelo 65)" : "NF-e (modelo 55)"}, série ${serie}, número ${numero}, ${pedido.itens.length} item(ns), R$ ${montada.total.toFixed(2)}, autorizador ${autorizador.nome}\n             chave ${montada.chave}`;
+	const resumo = `${nfce ? `NFC-e (modelo 65)${contingencia ? " em CONTINGÊNCIA offline" : ""}` : "NF-e (modelo 55)"}, série ${serie}, número ${numero}, ${pedido.itens.length} item(ns), R$ ${montada.total.toFixed(2)}, autorizador ${autorizador.nome}\n             chave ${montada.chave}`;
 	return { modelo, uf, chave: montada.chave, assinada, resumo };
 }
 
@@ -285,8 +297,8 @@ if (modo === "cancelar") {
 if (modo === "completo") {
 	const [pedidoNfe, pedidoNfce] = [opcao("--completo", 1) ?? "", opcao("--completo", 2) ?? ""];
 	if (!fs.existsSync(pedidoNfe) || !fs.existsSync(pedidoNfce)) sair(USO, 2);
-	const nfe = prepararNota(pedidoNfe, false, inteiro("--numero"));
-	const nfce = prepararNota(pedidoNfce, true, inteiro("--numero-nfce"));
+	const nfe = await prepararNota(pedidoNfe, false, inteiro("--numero"));
+	const nfce = await prepararNota(pedidoNfce, true, inteiro("--numero-nfce"));
 	console.log(`
 Emitente   : ${cert.commonName}
 Ambiente   : homologação (sem valor fiscal)
@@ -324,7 +336,7 @@ Roteiro:
 
 // ---------- Emissão de uma nota ----------
 
-const nota = prepararNota(arquivoPedido as string, args.includes("--nfce"), inteiro("--numero"));
+const nota = await prepararNota(arquivoPedido as string, args.includes("--nfce"), inteiro("--numero"), args.includes("--contingencia"));
 console.log(`
 Emitente   : ${cert.commonName}
 Ambiente   : homologação (sem valor fiscal)

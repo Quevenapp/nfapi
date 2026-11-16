@@ -121,6 +121,15 @@ export async function getSetting(db: D1Database, key: string): Promise<string | 
 	return row?.value ?? null;
 }
 
+/** Chaves de configuração com o prefixo dado e valor não vazio. */
+export async function listSettingKeys(db: D1Database, prefix: string): Promise<string[]> {
+	const { results } = await db
+		.prepare("SELECT key FROM settings WHERE substr(key, 1, ?) = ? AND value != ''")
+		.bind(prefix.length, prefix)
+		.all<{ key: string }>();
+	return results.map((r) => r.key);
+}
+
 export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
 	await db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").bind(key, value).run();
 }
@@ -262,7 +271,8 @@ export interface Nota {
 	numeroDps: number | null;
 	valor: number | null;
 	emitidaEm: string;
-	situacao: "autorizada" | "cancelada" | "denegada";
+	/** `contingencia`: NFC-e emitida offline, aguardando a transmissão à SEFAZ. */
+	situacao: "autorizada" | "cancelada" | "denegada" | "contingencia";
 	canceladaEm: string | null;
 	arquivos: NotaArquivo[];
 }
@@ -304,7 +314,7 @@ export async function listNotas(db: D1Database, limit = 100): Promise<Nota[]> {
 			nota.serie = meta.serie !== undefined ? String(meta.serie) : nota.serie;
 			nota.valor = typeof meta.valor === "number" ? meta.valor : nota.valor;
 			nota.emitidaEm = typeof meta.emitidaEm === "string" ? meta.emitidaEm : doc.createdAt;
-			if (meta.situacao === "denegada") nota.situacao = "denegada";
+			if (meta.situacao === "denegada" || meta.situacao === "contingencia") nota.situacao = meta.situacao;
 		}
 		if (tipo === "nfse") {
 			nota.numeroNfse = meta.numeroNfse ? String(meta.numeroNfse) : nota.numeroNfse;

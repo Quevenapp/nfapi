@@ -3,6 +3,7 @@
 // aqui: só documentos do titular do certificado, só endereços do governo, e
 // produção apenas quando liberada na tela /setup.
 
+import { assinarRsaSha1 } from "./nfe/qrcode";
 import type { Holder } from "./pfx";
 import type { SignRequest, SignResponse, TransmitRequest, TransmitResponse } from "./protocol";
 import { SignError, signXml } from "./signer";
@@ -27,6 +28,11 @@ export interface Operacoes {
 	holder: Holder;
 	sign(request: SignRequest): Promise<SignResponse>;
 	transmit(request: TransmitRequest): Promise<TransmitResponse>;
+	/**
+	 * Assinatura RSA-SHA1 (Base64) de um texto curto, com a chave do certificado.
+	 * Existe para o QR Code da NFC-e em contingência offline e para nada mais.
+	 */
+	assinarQrCodeOffline(campos: string): Promise<string>;
 	putDocument(key: string, body: string, options: { contentType: string; meta?: Record<string, unknown> }): Promise<void>;
 	/** Texto de um documento arquivado, ou null se ele não existe. */
 	getDocument(key: string): Promise<string | null>;
@@ -105,6 +111,20 @@ export async function abrirOperacoes(env: Bindings, transport: Transport, actor:
 				await store.audit(env.DB, { action: "transmitir", actor, outcome: err.code, detail: { host, ref: request.ref ?? null } });
 				throw new OperacaoError(err.status, err.code, err.message);
 			}
+		},
+
+		async assinarQrCodeOffline(campos) {
+			// Só o formato do QR Code offline da NFC-e (modelo 65, tipo de emissão 9) é
+			// aceito, do próprio titular e respeitando a trava de produção.
+			const m = /^(\d{6})([0-9A-Z]{14})65\d{12}9\d{9}\|3\|([12])\|\d{2}\|\d+\.\d{2}\|[123]?\|[0-9A-Z]*$/.exec(campos);
+			if (!m) throw new OperacaoError(422, "requisicao_invalida", "Conteúdo de QR Code offline inválido.");
+			if (cert.holder.kind !== "cnpj" || (m[2] as string).slice(0, 8) !== cert.holder.id.slice(0, 8)) {
+				throw new OperacaoError(422, "emitente_divergente", "O emitente do documento não corresponde ao titular do certificado instalado.");
+			}
+			if (m[3] === "1" && !(await store.getAllowProduction(env.DB))) {
+				throw new OperacaoError(422, "producao_bloqueada", "Este cofre está travado em homologação. Libere a produção na tela /setup.");
+			}
+			return assinarRsaSha1(cert.secrets.privateKeyPem, campos);
 		},
 
 		async putDocument(key, body, options) {

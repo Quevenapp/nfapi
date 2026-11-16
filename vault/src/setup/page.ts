@@ -433,6 +433,7 @@ export const SETUP_JS = String.raw`(function () {
 				(n.serie ? " · série " + n.serie + (n.numeroDps ? ", DPS " + n.numeroDps : "") : "");
 			var cancelada = n.situacao === "cancelada";
 			var denegada = n.situacao === "denegada";
+			var contingencia = n.situacao === "contingencia";
 			var detalhe = "Chave " + n.chaveAcesso +
 				" · " + (n.ambiente === "producao" ? "produção" : "homologação") +
 				(n.valor !== null ? " · R$ " + n.valor.toFixed(2).replace(".", ",") : "") +
@@ -449,12 +450,15 @@ export const SETUP_JS = String.raw`(function () {
 			var item = el("li", {}, [
 				el("div", { class: "head" }, [
 					el("span", { text: titulo }),
-					el("span", { class: "badge " + (cancelada || denegada ? "bad" : "ok"), text: cancelada ? "Cancelada" : (denegada ? "Denegada" : "Autorizada") })
+					el("span", {
+						class: "badge " + (cancelada || denegada ? "bad" : (contingencia ? "warn" : "ok")),
+						text: cancelada ? "Cancelada" : (denegada ? "Denegada" : (contingencia ? "Em contingência" : "Autorizada"))
+					})
 				]),
-				el("span", { class: "detail", text: detalhe }),
+				el("span", { class: "detail", text: detalhe + (contingencia ? " · aguardando a transmissão à SEFAZ" : "") }),
 				acts
 			]);
-			if (!cancelada && !denegada) {
+			if (!cancelada && !denegada && !contingencia) {
 				var cancelar = el("button", { type: "button", class: "ghost danger", text: "Cancelar nota" });
 				cancelar.addEventListener("click", function () {
 					if (!item.querySelector(".cancel-form")) formCancelar(n, item);

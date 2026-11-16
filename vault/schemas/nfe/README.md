@@ -12,6 +12,8 @@ O portal publica pacotes incrementais: nenhum zip tem o conjunto completo. Os ar
 | `Evento_Canc_PL_v1.01_NT_2018_004.zip` | `evento/`: conteúdo do evento de cancelamento (e110111). |
 | `Evento_CCe_PL_v1.01.zip` | `evento/`: conteúdo da carta de correção (e110110). |
 
+O `evento/e110112_v1.00.xsd` (cancelamento por substituição, NT 2018.004) não está em nenhum desses cinco pacotes: veio da cópia consolidada dos schemas oficiais mantida pelo projeto [sped-nfe](https://github.com/nfephp-org/sped-nfe/tree/master/schemes/PL_010g). Vale trocá-lo pelo arquivo do portal quando o pacote que o contém for localizado.
+
 Do pacote da carta de correção ficou só o `e110110_v1.00.xsd`: os envelopes daquele pacote (`envCCe`, `leiauteCCe`) redefinem um tipo que os tipos básicos atuais já trazem e não carregam junto com eles. O envelope é validado pelo `envEvento_v1.00.xsd` genérico.
 
 Ao atualizar, substitua os arquivos pelos do pacote novo e rode `pnpm test`: uma tag fora de ordem ou um campo novo obrigatório aparece como falha de validação.

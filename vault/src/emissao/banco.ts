@@ -8,6 +8,8 @@ export type EmissionStatus =
 	| "autorizada"
 	| "rejeitada"
 	| "denegada"
+	/** NFC-e emitida em contingência offline, aguardando a transmissão à SEFAZ. */
+	| "contingencia"
 	| "erro"
 	| "indefinida"
 	| "cancelada";
@@ -332,6 +334,29 @@ export async function listEmissions(
 		.bind(filtro.kind ?? null, filtro.reference ?? null, Math.min(Math.max(limit, 1), 200), filtro.environment ?? null)
 		.all<Row>();
 	return results.map(toEmission);
+}
+
+/**
+ * Emissões com pendência de contingência: as que aguardam transmissão e as que
+ * ainda têm uma nota normal sem resposta para conferir. As mais antigas primeiro.
+ */
+export async function listPendentesDeContingencia(db: D1Database, limit: number): Promise<Emission[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM emissions
+			 WHERE status = 'contingencia'
+			    OR (status = 'autorizada' AND json_extract(extra, '$.original.chave') IS NOT NULL AND json_extract(extra, '$.original.falha') IS NULL)
+			 ORDER BY created_at, rowid LIMIT ?`,
+		)
+		.bind(Math.min(Math.max(limit, 1), 200))
+		.all<Row>();
+	return results.map(toEmission);
+}
+
+/** Quantas notas estão em contingência, aguardando a transmissão. */
+export async function contarEmContingencia(db: D1Database): Promise<number> {
+	const row = await db.prepare("SELECT COUNT(*) AS n FROM emissions WHERE status = 'contingencia'").first<{ n: number }>();
+	return row?.n ?? 0;
 }
 
 // ---------- Inutilizações ----------
