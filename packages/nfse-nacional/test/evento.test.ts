@@ -10,7 +10,7 @@ import { CNPJ_TESTE, certificadoTeste } from "../../../vault/test/helpers";
 import { CancelamentoInput, gzipBase64, lerRespostaEvento, montarPedidoCancelamento } from "../src";
 
 xmlRegisterFsInputProviders();
-const SCHEMAS = path.join(import.meta.dirname, "../../fiscal-data/schemas/nfse");
+const SCHEMAS = path.join(import.meta.dirname, "../../../vault/schemas/nfse");
 const CHAVE = "35503082112223330001810000000000042261112345678907";
 
 function validar(xml: string, ambiente: Ambiente): string[] {

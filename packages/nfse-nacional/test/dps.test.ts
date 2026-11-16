@@ -12,7 +12,7 @@ import { NfseInput, idDps, montarDps } from "../src";
 
 xmlRegisterFsInputProviders();
 
-const SCHEMAS = path.join(import.meta.dirname, "../../fiscal-data/schemas/nfse");
+const SCHEMAS = path.join(import.meta.dirname, "../../../vault/schemas/nfse");
 
 /**
  * O XSD oficial de produção (pacote 20260209) define o padrão da série como
