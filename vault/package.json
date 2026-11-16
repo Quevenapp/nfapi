@@ -17,7 +17,7 @@
     "label": "NFapi Cofre",
     "bindings": {
       "VAULT_SECRET": {
-        "description": "Segredo mestre do cofre (64 caracteres hexadecimais). Gere um em https://nfapi.queven.app/deploy e guarde-o: ele protege o certificado e dá acesso à tela /setup."
+        "description": "Segredo mestre do cofre: no mínimo 32 caracteres aleatórios. Gere com `openssl rand -hex 32` e guarde-o em local seguro: ele cifra o certificado e é a senha da tela /setup."
       }
     }
   },
