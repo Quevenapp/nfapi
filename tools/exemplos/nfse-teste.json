@@ -1,5 +1,5 @@
 {
-	"_instrucoes": "Troque os três campos marcados com PREENCHA e ajuste descrição e valor. Formato igual ao do POST /v1/nfse (sem emitente e ambiente). Consulte packages/nfse-nacional/src/schema.ts para os demais campos (tomador, retenções etc.).",
+	"_instrucoes": "Troque os três campos marcados com PREENCHA e ajuste descrição e valor. Formato igual ao do POST /v1/nfse do cofre (sem ambiente e referência). Consulte vault/src/nfse/schema.ts para os demais campos (tomador, retenções etc.).",
 
 	"serie": "900",
 	"numero": 1,

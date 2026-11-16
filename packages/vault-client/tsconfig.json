@@ -1,9 +1,0 @@
-{
-	"extends": "../../tsconfig.base.json",
-	"compilerOptions": {
-		// Só APIs web padrão (fetch, WebCrypto): o cliente roda em qualquer Worker.
-		"lib": ["ES2023", "DOM"],
-		"types": []
-	},
-	"include": ["src", "../../vault/src/protocol.ts"]
-}

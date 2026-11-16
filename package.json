@@ -2,12 +2,12 @@
   "name": "nfapi",
   "private": true,
   "type": "module",
-  "description": "API open source para emissão de NFS-e, NF-e e NFC-e no Cloudflare, com o certificado digital e os documentos na conta do próprio emitente.",
+  "description": "Emissor open source de NFS-e, NF-e e NFC-e que roda inteiro na conta Cloudflare do próprio emitente: certificado digital, API de emissão e documentos.",
   "license": "MIT",
   "packageManager": "pnpm@11.25.0",
   "scripts": {
-    "test": "pnpm -r test && pnpm --dir vault test",
-    "typecheck": "pnpm -r typecheck && pnpm --dir vault typecheck",
+    "test": "pnpm --dir vault test",
+    "typecheck": "pnpm --dir vault typecheck",
     "emitir-teste": "tsx tools/emitir-nfse-teste.ts"
   },
   "devDependencies": {

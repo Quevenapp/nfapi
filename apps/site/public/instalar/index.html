@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Instalar o cofre — NFapi</title>
-<meta name="description" content="Passo a passo para instalar o cofre do NFapi na sua conta Cloudflare, com gerador do segredo do cofre.">
+<meta name="description" content="Passo a passo para instalar o cofre do NFapi na sua conta Cloudflare e emitir a primeira nota, com gerador do segredo do cofre.">
 <link rel="stylesheet" href="/estilo.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
 	<header>
 		<p class="small"><a href="/">NFapi</a> / Instalar o cofre</p>
 		<h1>Instalar o cofre na sua conta Cloudflare</h1>
-		<p class="lead">O cofre guarda o seu certificado digital A1, assina as notas e arquiva os XML. Ele roda na <strong>sua</strong> conta: o NFapi nunca recebe o certificado.</p>
+		<p class="lead">O cofre é o seu emissor: guarda o certificado digital A1, recebe os pedidos dos seus sistemas, emite as notas e arquiva os XML. Ele roda na <strong>sua</strong> conta: ninguém mais recebe o certificado.</p>
 	</header>
 
 	<section class="card">
@@ -74,22 +74,46 @@
 			<ol>
 				<li>Envie o arquivo <code>.pfx</code> e a senha do certificado.</li>
 				<li>Rode o <strong>teste de conexão</strong>: ele consulta os serviços de homologação do governo, sem emitir nada.</li>
-				<li>Gere o <strong>código de pareamento</strong>.</li>
 			</ol>
-			<p class="muted small">A produção começa bloqueada: o cofre só assina documentos de homologação até você liberar nessa mesma tela.</p>
+			<p class="muted small">A produção começa bloqueada: o cofre só emite em homologação até você liberar nessa mesma tela.</p>
 		</div>
 	</section>
 
 	<section class="card step">
 		<div class="num" aria-hidden="true">4</div>
 		<div class="body">
-			<h2>Conecte o cofre à API</h2>
-			<p>Envie o código de pareamento à API do NFapi, com a sua chave de API:</p>
-<pre><code>curl -X POST https://api.nfapi.queven.app/v1/emitentes \
-  -H "Authorization: Bearer SUA_CHAVE_DE_API" \
+			<h2>Crie uma chave de API e emita</h2>
+			<p>Na mesma tela, em <strong>Chaves de API</strong>, crie uma chave para cada sistema que vai emitir. Ela aparece uma única vez. Com ela, o seu sistema chama o cofre direto:</p>
+<pre><code>curl -X POST https://SEU-COFRE.workers.dev/v1/nfse \
+  -H "Authorization: Bearer nfapi_SUA_CHAVE" \
   -H "Content-Type: application/json" \
-  -d '{"codigoPareamento": "nfapi-cofre-v1...."}'</code></pre>
-			<p>A API consulta o cofre, lê o CNPJ do certificado e registra o emitente. A partir daí, as notas emitidas por ele são assinadas e arquivadas no seu cofre.</p>
+  -d '{
+    "ambiente": "homologacao",
+    "referencia": "pedido-1001",
+    "prestador": { "codigoMunicipio": "3550308",
+      "regimeTributario": { "simplesNacional": "me_epp", "apuracaoSimples": 1 } },
+    "tomador": { "cnpj": "99888777000166", "nome": "Cliente Ltda" },
+    "servico": { "codigoMunicipioPrestacao": "3550308",
+      "codigoTributacaoNacional": "010701", "descricao": "Suporte técnico" },
+    "valores": { "servico": 1500 },
+    "tributacao": { "issqn": { "aliquota": 2 },
+      "totalTributos": { "tipo": "percentual_simples", "percentual": 6 } }
+  }'</code></pre>
+			<p>O cofre numera, monta e assina a nota, envia ao governo e arquiva o XML. As notas emitidas aparecem na tela do cofre, com os arquivos para baixar e a opção de cancelar. A referência completa está no <a href="https://github.com/Quevenapp/nfapi/tree/main/vault#api">README do cofre</a>.</p>
+		</div>
+	</section>
+
+	<section class="card step">
+		<div class="num" aria-hidden="true">5</div>
+		<div class="body">
+			<h2>Deixe a atualização a um clique</h2>
+			<p>O governo muda regras e leiautes com frequência. Quando sai uma correção, a tela do cofre avisa. Para instalar com um clique, crie o gatilho uma única vez:</p>
+			<ol>
+				<li>No painel do Cloudflare, abra <strong>Workers &amp; Pages</strong> e selecione o Worker do cofre.</li>
+				<li>Em <strong>Settings &gt; Builds &gt; Deploy Hooks</strong>, crie um gatilho para a branch <code>main</code>.</li>
+				<li>Cole a URL gerada na seção <strong>Atualização</strong> da tela do cofre.</li>
+			</ol>
+			<p class="muted small">A atualização troca só o código. O certificado, as chaves de API e as notas arquivadas continuam onde estão.</p>
 		</div>
 	</section>
 

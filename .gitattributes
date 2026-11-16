@@ -2,4 +2,4 @@
 * text=auto eol=lf
 
 # Schemas e documentos oficiais do governo entram byte a byte, sem conversão de fim de linha.
-packages/fiscal-data/schemas/** -text
+vault/schemas/** -text

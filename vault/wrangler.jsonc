@@ -3,9 +3,7 @@
 	"name": "nfapi-cofre",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-11-01",
-	// global_fetch_strictly_public: o cofre alcança a API pelo endereço público mesmo
-	// quando os dois estão na mesma conta Cloudflare.
-	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
 	// Segredo obrigatório: o deploy falha se não estiver definido.
@@ -25,7 +23,7 @@
 	},
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["MtlsProxy"] }],
 
-	// Certificado cifrado, pareamento, auditoria e índice dos documentos.
+	// Certificado cifrado, chaves de API, emissões, auditoria e índice dos documentos.
 	"d1_databases": [
 		{
 			"binding": "DB",

@@ -1,49 +1,50 @@
 # NFapi
 
-API open source para emissão de notas fiscais brasileiras — **NFS-e** (Sistema Nacional), **NF-e** e **NFC-e** — no Cloudflare.
+Emissor open source de notas fiscais brasileiras — **NFS-e** (Sistema Nacional), **NF-e** e **NFC-e** — que roda inteiro na conta Cloudflare do próprio emitente.
 
-A ideia central: a API só emite. O certificado digital A1 e os documentos fiscais (XML) ficam em um **cofre** que cada emitente instala na própria conta Cloudflare. A API nunca recebe o certificado nem armazena as notas.
+Cada emitente instala um **cofre**: um Worker que guarda o certificado digital A1, expõe a API de emissão, fala com o governo e arquiva os XML. Não há serviço intermediário: os seus sistemas chamam o seu cofre, e o seu cofre chama o governo. Ninguém além de você recebe o certificado ou as notas.
 
-> **Estado: em desenvolvimento.** A emissão de NFS-e funciona nos testes automatizados, mas ainda não foi validada de ponta a ponta contra o governo. NF-e e NFC-e ainda não foram implementadas. Não use em produção.
+> **Estado: em desenvolvimento.** A emissão e o cancelamento de NFS-e já foram validados com notas reais na SEFIN Nacional. A forma atual, em que o cofre emite sozinho, passa nos testes automatizados mas ainda não repetiu essa validação em produção. NF-e e NFC-e ainda não foram implementadas.
 
 ## Como funciona
 
 ```
-Seu sistema ──chave de API──▶ API NFapi
-                               │ valida, monta o XML, numera
-                               │ requisições assinadas (HMAC)
-                               ▼
-                    Cofre (na conta Cloudflare do emitente)
-                    assina com o certificado A1 · arquiva os XML
-                               │ mTLS
-                               ▼
-                    SEFAZ / NFS-e Nacional
+Seu sistema (ERP, loja, Wabotia...)
+        │  chave de API
+        ▼
+Cofre NFapi (na sua conta Cloudflare)
+valida · numera · monta o XML · assina com o A1 · arquiva
+        │  mTLS
+        ▼
+SEFAZ / NFS-e Nacional
 ```
+
+O código do cofre é mantido neste repositório. Quando o governo muda uma regra, um endereço ou um leiaute, a correção é publicada no canal estável (branch `cofre-estavel`) e cada emitente a instala pelo botão **Atualizar** da tela do próprio cofre.
 
 ## Componentes
 
 | Pasta | O que é |
 |---|---|
-| [`vault/`](vault) | O cofre: certificado, assinatura, transporte mTLS e arquivo. Instalável pelo botão Deploy to Cloudflare. |
-| [`apps/api/`](apps/api) | A API central: contas, chaves, emitentes, emissão e o painel de administração. |
-| [`packages/nfse-nacional/`](packages/nfse-nacional) | Montagem da DPS e troca com a SEFIN Nacional. |
-| [`packages/fiscal-data/`](packages/fiscal-data) | Dados que mudam por ato do governo: endereços, leiautes e schemas XSD oficiais. |
-| [`packages/vault-client/`](packages/vault-client) | Cliente da API para falar com o cofre. |
+| [`vault/`](vault) | O cofre: certificado, API de emissão, regras fiscais, transporte mTLS e arquivo. Instalável pelo botão Deploy to Cloudflare. |
+| [`vault/schemas/`](vault/schemas) | Schemas XSD oficiais usados para validar os documentos nos testes. |
 | [`apps/site/`](apps/site) | O site: apresentação e a página de instalação do cofre, com gerador de segredo. |
+| [`tools/`](tools) | Scripts de apoio, como a emissão de uma NFS-e de teste a partir desta máquina. |
 
 ## Instalar o cofre
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Quevenapp/nfapi/tree/main/vault)
 
-O passo a passo, com gerador do segredo do cofre, está em <https://nfapi.queven.app/instalar>. Veja também o [README do cofre](vault/README.md).
+O passo a passo, com gerador do segredo do cofre, está em <https://nfapi.queven.app/instalar>. A referência da API e os detalhes de segurança estão no [README do cofre](vault/README.md).
 
 ## Desenvolvimento
 
-Requer Node 22 e pnpm.
+Requer Node 22 ou mais novo e pnpm.
 
 ```bash
-pnpm install
 pnpm --dir vault install
+```
+
+```bash
 pnpm test
 ```
 

@@ -1,6 +1,6 @@
 // Emissão REAL de uma NFS-e de teste na PRODUÇÃO RESTRITA do Sistema Nacional.
 //
-// Roda tudo nesta máquina, com o mesmo código que a API e o cofre usam:
+// Roda tudo nesta máquina, com o mesmo código que o cofre usa:
 //   pedido (JSON) -> DPS -> assinatura com o certificado A1 -> proxy mTLS -> SEFIN
 //
 // A nota gerada não tem valor fiscal (ambiente de testes), mas é emitida em nome
@@ -21,14 +21,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { NFSE_NACIONAL, type PerfilAssinatura, nfseAmbiente } from "../packages/fiscal-data/src/index.ts";
-import {
-	NfseInput,
-	corpoEmissao,
-	lerMensagens,
-	lerRespostaEmissao,
-	montarDps,
-} from "../packages/nfse-nacional/src/index.ts";
+import { NFSE_NACIONAL, type PerfilAssinatura, nfseAmbiente } from "../vault/src/fiscal/dados.ts";
+import { NfseInput, corpoEmissao, lerMensagens, lerRespostaEmissao, montarDps } from "../vault/src/nfse/index.ts";
 import { parsePfx } from "../vault/src/pfx.ts";
 import { SignError, signXml } from "../vault/src/signer.ts";
 

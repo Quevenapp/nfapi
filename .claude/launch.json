@@ -8,12 +8,6 @@
 			"port": 8787
 		},
 		{
-			"name": "api",
-			"runtimeExecutable": "pnpm",
-			"runtimeArgs": ["--dir", "apps/api", "exec", "wrangler", "dev", "--port", "8788"],
-			"port": 8788
-		},
-		{
 			"name": "site",
 			"runtimeExecutable": "pnpm",
 			"runtimeArgs": ["--dir", "apps/site", "exec", "wrangler", "dev", "--port", "8789"],
