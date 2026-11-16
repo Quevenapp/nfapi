@@ -27,7 +27,22 @@ export async function dentroDoLimite(
 	return (row?.count ?? 1) <= limite;
 }
 
-/** IP de quem chamou, como o Cloudflare informa. */
+/**
+ * Endereço que o Cloudflare informa em CF-Connecting-IP quando a chamada parte
+ * de outro Worker. É o mesmo para todos os Workers, então não identifica ninguém.
+ */
+const SAIDA_DOS_WORKERS = "2a06:98c0:3600::103";
+
+/**
+ * Quem está chamando, para fins de limite de taxa. Chamadas feitas por um
+ * Worker (o caso do cofre no cadastro) são identificadas pela zona do Worker,
+ * que o Cloudflare informa em CF-Worker; as demais, pelo IP.
+ *
+ * CF-Worker só é considerado quando o IP é o de saída dos Workers: assim um
+ * cliente comum não troca de identidade inventando esse cabeçalho.
+ */
 export function ipDoCliente(headers: Headers): string {
-	return headers.get("cf-connecting-ip") ?? "desconhecido";
+	const ip = headers.get("cf-connecting-ip") ?? "desconhecido";
+	const worker = headers.get("cf-worker");
+	return ip === SAIDA_DOS_WORKERS && worker ? `worker:${worker.toLowerCase()}` : ip;
 }
