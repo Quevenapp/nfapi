@@ -13,6 +13,12 @@ importers:
       '@hono/zod-openapi':
         specifier: ^1.6.3
         version: 1.6.3(hono@4.13.18)(zod@4.6.7)
+      '@nfapi/fiscal-data':
+        specifier: workspace:*
+        version: link:../../packages/fiscal-data
+      '@nfapi/nfse-nacional':
+        specifier: workspace:*
+        version: link:../../packages/nfse-nacional
       '@nfapi/vault-client':
         specifier: workspace:*
         version: link:../../packages/vault-client
@@ -38,6 +44,34 @@ importers:
       wrangler:
         specifier: ^4.162.0
         version: 4.162.0(@types/node@26.6.6)
+
+  packages/fiscal-data:
+    devDependencies:
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/nfse-nacional:
+    dependencies:
+      '@nfapi/fiscal-data':
+        specifier: workspace:*
+        version: link:../fiscal-data
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      libxml2-wasm:
+        specifier: ^0.7.2
+        version: 0.7.2
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: ^5.1.0
+        version: 5.1.0(@types/node@26.6.6)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(yaml@2.9.1))
 
   packages/vault-client:
     devDependencies:
@@ -800,6 +834,10 @@ packages:
   kleur@4.1.5:
     resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
     engines: {node: '>=6'}
+
+  libxml2-wasm@0.7.2:
+    resolution: {integrity: sha512-Ek8Fdb8fIl6mBCvrMGImkOP02aDpANwus0PV827v4gobV9jnoYEHNoPTwWokt71egUBl+sng53fjZ5y2PexLqQ==}
+    engines: {node: '>=18'}
 
   lightningcss-android-arm64@1.33.0:
     resolution: {integrity: sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==}
@@ -1619,6 +1657,8 @@ snapshots:
   hono@4.13.18: {}
 
   kleur@4.1.5: {}
+
+  libxml2-wasm@0.7.2: {}
 
   lightningcss-android-arm64@1.33.0:
     optional: true

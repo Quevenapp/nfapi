@@ -206,15 +206,26 @@ export async function listEmitters(db: D1Database, accountId: string): Promise<E
 	return results.map(toEmitter);
 }
 
-/** Grava (ou substitui, pelo mesmo id) um emitente e o estado do seu cofre. */
+/**
+ * Grava um emitente ou atualiza o existente (mesmo id). Usa UPSERT, e não
+ * REPLACE: o REPLACE apaga a linha antes de regravar e dispararia exclusões em
+ * cascata nas tabelas que referenciam o emitente.
+ */
 export async function saveEmitter(db: D1Database, e: Emitter): Promise<void> {
 	await db
 		.prepare(
-			`INSERT OR REPLACE INTO emitters
+			`INSERT INTO emitters
 			 (id, account_id, doc_kind, doc_id, name, vault_url, pairing_id, pairing_key_iv, pairing_key_ct,
 			  vault_version, vault_protocol, allow_production, cert_issuer, cert_not_after,
 			  status, status_detail, checked_at, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT (id) DO UPDATE SET
+			  name = excluded.name, vault_url = excluded.vault_url, pairing_id = excluded.pairing_id,
+			  pairing_key_iv = excluded.pairing_key_iv, pairing_key_ct = excluded.pairing_key_ct,
+			  vault_version = excluded.vault_version, vault_protocol = excluded.vault_protocol,
+			  allow_production = excluded.allow_production, cert_issuer = excluded.cert_issuer,
+			  cert_not_after = excluded.cert_not_after, status = excluded.status,
+			  status_detail = excluded.status_detail, checked_at = excluded.checked_at`,
 		)
 		.bind(
 			e.id,

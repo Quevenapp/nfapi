@@ -15,7 +15,7 @@ import {
 	decodePairingCode,
 	fromHex,
 } from "@nfapi/vault-client";
-import type { Context } from "hono";
+import { type ApiEnv, type C, type Ctx, Erro, erro, erros, iso, json, security } from "./comum";
 import {
 	hashApiKey,
 	looksLikeApiKey,
@@ -27,33 +27,18 @@ import {
 	secretIsStrong,
 } from "./crypto";
 import * as db from "./db";
+import { registrarNfse } from "./nfse";
+import { API_VERSION } from "./versao";
 
-export const API_VERSION = "0.1.0";
-
-export interface ApiEnv {
-	DB: D1Database;
-	MASTER_KEY: string;
-	ADMIN_TOKEN: string;
-}
+export { API_VERSION };
+export type { ApiEnv };
 
 export interface ApiDeps {
 	/** Como alcançar os cofres. Trocado nos testes; em produção é o fetch global. */
 	vaultFetch?: typeof fetch;
 }
 
-type Ctx = { Bindings: ApiEnv; Variables: { account: db.Account } };
-type C = Context<Ctx>;
-
 // ---------- Esquemas (também geram o OpenAPI) ----------
-
-const Erro = z
-	.object({
-		erro: z.object({
-			codigo: z.string().openapi({ example: "nao_autenticado" }),
-			mensagem: z.string(),
-		}),
-	})
-	.openapi("Erro");
 
 const Conta = z
 	.object({
@@ -108,8 +93,6 @@ const Emitente = z
 	})
 	.openapi("Emitente");
 
-const iso = (ms: number) => new Date(ms).toISOString();
-
 const contaJson = (a: db.Account): z.infer<typeof Conta> => ({
 	id: a.id,
 	nome: a.name,
@@ -147,23 +130,6 @@ const emitenteJson = (e: db.Emitter): z.infer<typeof Emitente> => ({
 	},
 	criadoEm: iso(e.createdAt),
 });
-
-type Status = 400 | 401 | 404 | 409 | 422 | 500 | 502 | 503;
-
-function erro<S extends Status>(c: C, status: S, codigo: string, mensagem: string) {
-	return c.json({ erro: { codigo, mensagem } }, status);
-}
-
-const json = <T extends z.ZodType>(schema: T, description: string) => ({
-	description,
-	content: { "application/json": { schema } },
-});
-const erros = {
-	400: json(Erro, "Requisição inválida."),
-	401: json(Erro, "Chave de API ausente, inválida ou revogada."),
-	404: json(Erro, "Recurso inexistente nesta conta."),
-} as const;
-const security = [{ chaveApi: [] }];
 
 // ---------- Conversa com o cofre ----------
 
@@ -558,6 +524,10 @@ export function createApi(deps: ApiDeps = {}) {
 			return c.body(null, 204);
 		},
 	);
+
+	// ---------- Documentos fiscais ----------
+
+	registrarNfse(app, { vaultFor });
 
 	// ---------- OpenAPI ----------
 

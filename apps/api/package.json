@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@hono/zod-openapi": "^1.6.3",
+    "@nfapi/fiscal-data": "workspace:*",
+    "@nfapi/nfse-nacional": "workspace:*",
     "@nfapi/vault-client": "workspace:*",
     "hono": "^4.13.18",
     "zod": "^4.6.7"

@@ -104,7 +104,7 @@ export async function safeEqual(a: string, b: string): Promise<boolean> {
 	return diff === 0;
 }
 
-export function newId(prefix: "cta" | "chv" | "emi"): string {
+export function newId(prefix: "cta" | "chv" | "emi" | "nfs"): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(10));
 	return `${prefix}_${toHex(bytes)}`;
 }
