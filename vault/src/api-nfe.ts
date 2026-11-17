@@ -22,6 +22,7 @@ import { ambienteDoFiltro, autenticar, erro, iso, operacoes, problema } from "./
 import type { AppEnv, Ctx } from "./app";
 import { estadoDaAtualizacao } from "./atualizacao";
 import { contratoOpenApi } from "./contrato";
+import { CupomError, montarCupom } from "./danfe/cupom";
 import * as banco from "./emissao/banco";
 import { MODELO, cancelarNfe, corrigirNfe, emitirNfe, inutilizarNumeracao, sincronizarNfe, statusSefaz } from "./emissao/nfe";
 import { autorizadorNfe, ufsAtendidas } from "./fiscal/dados";
@@ -238,6 +239,29 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 			return c.body(object.body, 200, { "content-type": "application/xml; charset=utf-8" });
 		};
 		app.get(`${base}/:id/cancelamento/xml`, (c) => xmlDoEvento(c, "cancelamento"));
+
+		// Conteúdo do DANFE NFC-e em JSON, para o caixa imprimir na bobina.
+		if (doc === "nfce") {
+			app.get(`${base}/:id/cupom`, async (c) => {
+				const chave = await autenticar(c);
+				if (chave instanceof Response) return chave;
+				const emission = await buscar(c);
+				if (!emission) return inexistente(c);
+				const object = emission.documentKey ? await store.getDocument(c.env.DOCS, emission.documentKey) : null;
+				if (!object) return erro(c, 409, "nfe_nao_autorizada", "Só há cupom para nota autorizada ou emitida em contingência.");
+				const via = c.req.query("via");
+				if (via && via !== "consumidor" && via !== "estabelecimento") {
+					return erro(c, 400, "requisicao_invalida", 'O parâmetro "via" aceita consumidor ou estabelecimento.');
+				}
+				try {
+					const cupom = montarCupom(await object.text(), { via: via === "estabelecimento" ? "estabelecimento" : "consumidor" });
+					return c.json({ id: emission.id, situacao: emission.status, ...cupom });
+				} catch (err) {
+					if (!(err instanceof CupomError)) throw err;
+					return erro(c, 409, "nfe_nao_autorizada", err.message);
+				}
+			});
+		}
 		if (doc === "nfe") {
 			app.get(`${base}/:id/carta-correcao/:sequencia/xml`, async (c) => {
 				const sequencia = Number(c.req.param("sequencia"));

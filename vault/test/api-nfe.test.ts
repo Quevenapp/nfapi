@@ -364,6 +364,42 @@ describe("NFC-e pelo cofre", () => {
 		expect(envio.corpo).toContain("<mod>65</mod>");
 		expect(envio.corpo).toMatch(/<\/infNFe><infNFeSupl><qrCode><!\[CDATA\[/);
 
+		// O cupom (DANFE NFC-e) em JSON, para o caixa imprimir na bobina.
+		const cupom = (await cliente("GET", `/v1/nfce/${caixa1.json.id}/cupom`)).json;
+		expect(cupom).toMatchObject({
+			id: caixa1.json.id, situacao: "autorizada", modelo: "nfce", contingencia: false, pendenteDeAutorizacao: false, via: "consumidor",
+			numero: 1, serie: 1, protocolo: "135260000000777", valorAPagar: 59.9, chaveAcesso: caixa1.json.chaveAcesso, qrCode: caixa1.json.qrCode,
+			urlConsulta: "https://www.homologacao.nfce.fazenda.sp.gov.br/consulta",
+		});
+		expect(cupom.secoes.map((s: Json) => s.divisao)).toEqual(["cabecalho", "itens", "totais", "consulta", "consumidor", "identificacao", "qrcode", "mensagem_fiscal", "mensagem_contribuinte"]);
+		const linhas = (divisao: string) => cupom.secoes.find((s: Json) => s.divisao === divisao).linhas as Json[];
+		expect(linhas("cabecalho")[0]).toEqual({ tipo: "texto", texto: "Loja Exemplo Ltda", alinhamento: "centro", negrito: true, tamanho: "normal" });
+		expect(linhas("cabecalho").map((l) => l.texto)).toEqual([
+			"Loja Exemplo Ltda", "CNPJ: 11.222.333/0001-81", "Rua das Flores, 100, Centro, São Paulo - SP", "Documento Auxiliar da Nota Fiscal de Consumidor Eletrônica",
+		]);
+		expect(linhas("itens")).toEqual([
+			{
+				tipo: "item", numero: 1, codigo: "789", descricao: "NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL", quantidade: 1, unidade: "UN",
+				valorUnitario: 59.9, valorTotal: 59.9, quantidadeTexto: "1", valorUnitarioTexto: "59,90", valorTotalTexto: "59,90",
+			},
+		]);
+		expect(linhas("totais")).toEqual([
+			{ tipo: "par", rotulo: "Qtde. total de itens", valor: "1", negrito: false },
+			{ tipo: "par", rotulo: "Valor total R$", valor: "59,90", negrito: false },
+			{ tipo: "par", rotulo: "FORMA PAGAMENTO", valor: "VALOR PAGO R$", negrito: false },
+			{ tipo: "par", rotulo: "Dinheiro", valor: "100,00", negrito: false },
+			{ tipo: "par", rotulo: "Troco R$", valor: "40,10", negrito: false },
+		]);
+		expect(linhas("consulta")[2]).toEqual({ tipo: "chave", chave: caixa1.json.chaveAcesso });
+		expect(linhas("consumidor")[0]?.texto).toBe("CONSUMIDOR CPF: 123.456.789-09");
+		expect(linhas("identificacao").map((l) => l.texto)).toEqual([
+			expect.stringMatching(/^NFC-e n\. 1 Série 1 \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}$/), "Via Consumidor", "Protocolo de autorização: 135260000000777", "Data de autorização 16/11/2026 12:31:00",
+		]);
+		expect(linhas("qrcode")).toEqual([{ tipo: "qrcode", texto: caixa1.json.qrCode, tamanhoMinimoMm: 25 }]);
+		expect(linhas("mensagem_fiscal")[0]?.texto).toBe("EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO - SEM VALOR FISCAL");
+		expect(linhas("mensagem_contribuinte")[0]).toMatchObject({ tipo: "par", valor: "12,50" });
+		expect((await cliente("GET", `/v1/nfce/${caixa1.json.id}/cupom?via=cozinha`)).status).toBe(400);
+
 		// NF-e e NFC-e não se misturam: rotas, séries e listas são separadas.
 		expect((await cliente("GET", `/v1/nfe/${caixa1.json.id}`)).status).toBe(404);
 		expect((await cliente("POST", `/v1/nfce/${caixa1.json.id}/carta-correcao`, { correcao: "Não existe carta na NFC-e" })).status).toBe(404);

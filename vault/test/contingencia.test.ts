@@ -114,6 +114,14 @@ describe("contingência offline da NFC-e", () => {
 		expect((await cliente("GET", "/v1/cofre")).json.contingencia).toEqual({ notasPendentes: 1 });
 		expect((await admin("GET", "/admin/notas")).json.notas[0].situacao).toBe("contingencia");
 
+		// O cupom da nota em contingência: os dizeres em dois lugares, sem protocolo, e a via do estabelecimento.
+		const cupom = (await cliente("GET", `/v1/nfce/${json.id}/cupom?via=estabelecimento`)).json;
+		expect(cupom).toMatchObject({ situacao: "contingencia", contingencia: true, pendenteDeAutorizacao: true, via: "estabelecimento", protocolo: null, qrCode: json.qrCode });
+		const textos = (divisao: string) => (cupom.secoes.find((s: Json) => s.divisao === divisao).linhas as Json[]).map((l) => l.texto ?? l.tipo);
+		expect(textos("cabecalho").slice(-4)).toEqual(["separador", "EMITIDA EM CONTINGÊNCIA", "Pendente de autorização", "separador"]);
+		expect(textos("identificacao").slice(1)).toEqual(["Via do Estabelecimento", "EMITIDA EM CONTINGÊNCIA", "Pendente de autorização"]);
+		expect((await cliente("GET", `/v1/nfce/${json.id}/cupom`)).json.via).toBe("consumidor");
+
 		// A fila: confere o status da SEFAZ e transmite o XML que já estava assinado.
 		expect(await processar()).toEqual({ resumo: { autorizadas: 1, rejeitadas: 0, aguardando: 0 }, notasPendentes: 0 });
 		expect(sefaz.chamadas.map((c) => c.servico)).toEqual(["status", "autorizacao"]);
@@ -122,6 +130,12 @@ describe("contingência offline da NFC-e", () => {
 		expect(autorizada).toMatchObject({ situacao: "autorizada", protocolo: "135260000000777", chaveAcesso: json.chaveAcesso, qrCode: json.qrCode });
 		expect(autorizada.contingencia.pendente).toBe(false);
 		expect((await cliente("GET", `/v1/nfce/${json.id}/xml`)).text).toMatch(/^<nfeProc /);
+
+		// Depois de autorizada, o cupom ganha o protocolo e perde os dizeres de pendência.
+		const depois = (await cliente("GET", `/v1/nfce/${json.id}/cupom`)).json;
+		expect(depois).toMatchObject({ situacao: "autorizada", contingencia: true, pendenteDeAutorizacao: false, protocolo: "135260000000777" });
+		expect(JSON.stringify(depois.secoes)).not.toContain("Pendente de autorização");
+		expect(JSON.stringify(depois.secoes)).toContain("Protocolo de autorização: 135260000000777");
 	});
 
 	it("automática: a SEFAZ não responde, a venda sai em contingência com número novo", async () => {

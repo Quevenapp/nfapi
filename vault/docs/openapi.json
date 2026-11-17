@@ -2,7 +2,7 @@
 	"openapi": "3.1.0",
 	"info": {
 		"title": "Cofre NFapi",
-		"version": "0.6.0",
+		"version": "0.7.0",
 		"description": "API de emissão de notas fiscais do cofre NFapi, que roda na conta Cloudflare do emitente. Todas as chamadas levam uma chave de API criada na tela /setup do cofre. O cofre não calcula imposto: o sistema que chama informa bases, alíquotas e valores; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva. Erros vêm sempre como `{ \"erro\": { \"codigo\", \"mensagem\" } }`.",
 		"license": {
 			"name": "MIT"
@@ -1747,6 +1747,111 @@
 				}
 			}
 		},
+		"/v1/nfce/{id}/cupom": {
+			"get": {
+				"tags": [
+					"NFC-e"
+				],
+				"summary": "Conteúdo do DANFE NFC-e (cupom) em JSON, para imprimir na bobina",
+				"description": "Montado a partir do XML arquivado, com as divisões e os dizeres obrigatórios do manual do DANFE NFC-e. Serve para a nota autorizada e para a nota em contingência; nas demais situações (rejeitada sem XML, em processamento) responde 409 nfe_nao_autorizada.",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da emissão no cofre."
+					},
+					{
+						"name": "via",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": [
+								"consumidor",
+								"estabelecimento"
+							],
+							"default": "consumidor"
+						},
+						"description": "A via do estabelecimento só existe na nota em contingência; nas demais o cupom sai sempre como via do consumidor."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "O cupom.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Cupom"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/v1/nfse": {
 			"post": {
 				"tags": [
@@ -3028,7 +3133,7 @@
 									},
 									"nfe_nao_autorizada": {
 										"status": 409,
-										"quando": "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada."
+										"quando": "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada, ou cupom de NFC-e sem XML arquivado."
 									},
 									"nfse_nao_autorizada": {
 										"status": 409,
@@ -8322,6 +8427,298 @@
 					"situacao",
 					"mensagens",
 					"xmlDisponivel"
+				]
+			},
+			"Cupom": {
+				"type": "object",
+				"description": "Conteúdo do DANFE NFC-e, na ordem e com os dizeres do manual oficial (versão 6.0), para o caixa imprimir na bobina. Imprima as seções na ordem em que vêm e as linhas na ordem em que vêm. Não há largura, corte nem avanço de papel: isso é do caixa. Os textos fixos usam só caracteres das páginas de código comuns de impressora; os que vêm da nota (nomes, descrições, informações adicionais) saem como estão no XML.",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"situacao": {
+						"type": "string",
+						"description": "Situação da emissão no cofre. Uma nota `cancelada` ainda devolve o cupom: não o entregue ao consumidor."
+					},
+					"modelo": {
+						"const": "nfce"
+					},
+					"chaveAcesso": {
+						"type": "string"
+					},
+					"ambiente": {
+						"type": "string",
+						"enum": [
+							"homologacao",
+							"producao"
+						]
+					},
+					"contingencia": {
+						"type": "boolean",
+						"description": "Nota emitida em contingência offline. Imprima também a via do estabelecimento (`?via=estabelecimento`)."
+					},
+					"pendenteDeAutorizacao": {
+						"type": "boolean",
+						"description": "A nota em contingência ainda não foi autorizada: o cupom sai com os dizeres de contingência e sem protocolo."
+					},
+					"via": {
+						"type": "string",
+						"enum": [
+							"consumidor",
+							"estabelecimento"
+						]
+					},
+					"numero": {
+						"type": "integer"
+					},
+					"serie": {
+						"type": "integer"
+					},
+					"emitidaEm": {
+						"type": "string"
+					},
+					"protocolo": {
+						"type": [
+							"string",
+							"null"
+						]
+					},
+					"autorizadaEm": {
+						"type": [
+							"string",
+							"null"
+						]
+					},
+					"valorAPagar": {
+						"type": "number"
+					},
+					"qrCode": {
+						"type": "string",
+						"description": "O mesmo texto da linha `qrcode`, para quem monta o cupom por conta própria."
+					},
+					"urlConsulta": {
+						"type": "string",
+						"description": "Endereço de consulta pela chave de acesso."
+					},
+					"secoes": {
+						"type": "array",
+						"description": "Divisões do DANFE NFC-e que têm conteúdo, na ordem de impressão.",
+						"items": {
+							"type": "object",
+							"properties": {
+								"divisao": {
+									"type": "string",
+									"enum": [
+										"cabecalho",
+										"itens",
+										"totais",
+										"consulta",
+										"consumidor",
+										"identificacao",
+										"qrcode",
+										"mensagem_fiscal",
+										"mensagem_contribuinte"
+									]
+								},
+								"linhas": {
+									"type": "array",
+									"items": {
+										"$ref": "#/components/schemas/LinhaDoCupom"
+									}
+								}
+							},
+							"required": [
+								"divisao",
+								"linhas"
+							]
+						}
+					}
+				},
+				"required": [
+					"id",
+					"situacao",
+					"modelo",
+					"chaveAcesso",
+					"ambiente",
+					"contingencia",
+					"pendenteDeAutorizacao",
+					"via",
+					"numero",
+					"serie",
+					"emitidaEm",
+					"valorAPagar",
+					"qrCode",
+					"urlConsulta",
+					"secoes"
+				]
+			},
+			"LinhaDoCupom": {
+				"description": "Uma linha do cupom. O campo `tipo` diz o formato.",
+				"oneOf": [
+					{
+						"type": "object",
+						"description": "Texto livre: razão social, dizeres obrigatórios, informações adicionais.",
+						"properties": {
+							"tipo": {
+								"const": "texto"
+							},
+							"texto": {
+								"type": "string"
+							},
+							"alinhamento": {
+								"type": "string",
+								"enum": [
+									"esquerda",
+									"centro",
+									"direita"
+								]
+							},
+							"negrito": {
+								"type": "boolean"
+							},
+							"tamanho": {
+								"type": "string",
+								"enum": [
+									"normal",
+									"dobrado"
+								],
+								"description": "`dobrado`: altura e largura dobradas, quando a impressora tiver."
+							}
+						},
+						"required": [
+							"tipo",
+							"texto",
+							"alinhamento",
+							"negrito",
+							"tamanho"
+						]
+					},
+					{
+						"type": "object",
+						"description": "Linha separadora, do jeito que o caixa costuma imprimir.",
+						"properties": {
+							"tipo": {
+								"const": "separador"
+							}
+						},
+						"required": [
+							"tipo"
+						]
+					},
+					{
+						"type": "object",
+						"description": "Item da venda, em campos: o caixa monta as colunas conforme a largura da bobina.",
+						"properties": {
+							"tipo": {
+								"const": "item"
+							},
+							"numero": {
+								"type": "integer"
+							},
+							"codigo": {
+								"type": "string"
+							},
+							"descricao": {
+								"type": "string"
+							},
+							"quantidade": {
+								"type": "number"
+							},
+							"unidade": {
+								"type": "string"
+							},
+							"valorUnitario": {
+								"type": "number"
+							},
+							"valorTotal": {
+								"type": "number"
+							},
+							"quantidadeTexto": {
+								"type": "string",
+								"description": "A quantidade já no formato de impressão (vírgula decimal)."
+							},
+							"valorUnitarioTexto": {
+								"type": "string"
+							},
+							"valorTotalTexto": {
+								"type": "string"
+							}
+						},
+						"required": [
+							"tipo",
+							"numero",
+							"codigo",
+							"descricao",
+							"quantidade",
+							"unidade",
+							"valorUnitario",
+							"valorTotal",
+							"quantidadeTexto",
+							"valorUnitarioTexto",
+							"valorTotalTexto"
+						]
+					},
+					{
+						"type": "object",
+						"description": "Rótulo à esquerda e valor à direita: totais, formas de pagamento, troco, tributos.",
+						"properties": {
+							"tipo": {
+								"const": "par"
+							},
+							"rotulo": {
+								"type": "string"
+							},
+							"valor": {
+								"type": "string"
+							},
+							"negrito": {
+								"type": "boolean"
+							}
+						},
+						"required": [
+							"tipo",
+							"rotulo",
+							"valor",
+							"negrito"
+						]
+					},
+					{
+						"type": "object",
+						"description": "Chave de acesso: só os 44 caracteres. Imprima em 11 blocos de 4, separados por espaço.",
+						"properties": {
+							"tipo": {
+								"const": "chave"
+							},
+							"chave": {
+								"type": "string"
+							}
+						},
+						"required": [
+							"tipo",
+							"chave"
+						]
+					},
+					{
+						"type": "object",
+						"description": "QR Code: gere a imagem a partir do texto, sem alterar nem truncar, em preto e branco puro.",
+						"properties": {
+							"tipo": {
+								"const": "qrcode"
+							},
+							"texto": {
+								"type": "string"
+							},
+							"tamanhoMinimoMm": {
+								"type": "number",
+								"description": "Lado mínimo da imagem impressa, em milímetros."
+							}
+						},
+						"required": [
+							"tipo",
+							"texto",
+							"tamanhoMinimoMm"
+						]
+					}
 				]
 			},
 			"InutilizacaoRegistrada": {

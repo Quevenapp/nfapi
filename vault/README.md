@@ -53,6 +53,7 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 | `POST /v1/{doc}/:id/cancelar` | Cancela |
 | `POST /v1/{doc}/:id/consultar` | NF-e e NFC-e: consulta a SEFAZ e fecha uma emissão que ficou sem resposta |
 | `POST /v1/nfe/:id/carta-correcao` | NF-e: registra uma carta de correção |
+| `GET /v1/nfce/:id/cupom` | NFC-e: conteúdo do DANFE NFC-e em JSON, para imprimir na bobina |
 | `POST /v1/inutilizacoes` | NF-e e NFC-e: inutiliza uma faixa de numeração (extinta em SP, AC e BA) |
 | `GET /v1/series` | Séries cadastradas e o próximo número de cada uma |
 | `GET /v1/cofre` | Versão, atualização pendente, validade do certificado e ambientes liberados |
@@ -66,6 +67,7 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 - **UFs atendidas.** NF-e: SP e as UFs autorizadas pela SVRS (AC, AL, AP, CE, DF, ES, PA, PB, PI, RJ, RN, RO, RR, SC, SE, TO). NFC-e: SP. `GET /v1/cofre` devolve a lista da versão instalada.
 - **Reforma tributária.** O grupo de IBS e CBS (`impostos.ibsCbs`) já é exigido do regime normal em homologação; o cofre o repassa como informado e soma os totais. Cobre alíquota reduzida, diferimento, devolução de tributo, tributação regular, compras governamentais, IBS e CBS do Simples Nacional, estorno de crédito e crédito presumido, além do Imposto Seletivo (`impostos.impostoSeletivo`). Ainda fora: regime monofásico (combustíveis), transferência de crédito, ajuste de competência e crédito presumido da Zona Franca de Manaus. O valor da nota (`vNF`) ainda não inclui IBS, CBS nem Imposto Seletivo.
 - **Exportação e importação.** Na exportação, o destinatário vai com `idEstrangeiro` e endereço no exterior (`uf: "EX"`, `codigoMunicipio: "9999999"`, `codigoPais`), a nota leva `exportacao` (UF e local de embarque) e o item pode levar `exportacao` (drawback e exportação indireta). Na importação, o item leva `importacao` (a declaração de importação com as adições) e `impostos.ii`.
+- **Cupom da NFC-e.** `GET /v1/nfce/:id/cupom` devolve o conteúdo do DANFE NFC-e já organizado: as divisões na ordem do manual oficial, os dizeres obrigatórios, os itens em campos, os totais e pagamentos como pares de rótulo e valor, a chave de acesso e o texto do QR Code. O sistema do caixa transforma isso na impressão da bobina (58 ou 80 mm); o cofre não conhece impressora.
 - **Ainda não há:** DANFE e DANFCE em PDF, contingência da NF-e (SVC) e eventos além de cancelamento e carta de correção.
 
 ### Contingência da NFC-e
@@ -80,7 +82,7 @@ No pedido de NFC-e, `"contingencia": "automatica"` faz o cofre esperar até 20 s
 - Se a SEFAZ rejeitar a nota na transmissão, ela fica `rejeitada` com o motivo e mantém o número. O sistema corrige e reenvia com a mesma referência; a nota sai com o mesmo número e a mesma data.
 - `"contingencia": "forcada"` emite direto em contingência; o padrão, `"nunca"`, devolve 502.
 
-Obrigações de quem emite em contingência, que ficam com o sistema do caixa: imprimir o DANFCE com os dizeres "EMITIDA EM CONTINGÊNCIA" e "Pendente de autorização", guardar a via do estabelecimento (ou o XML, conforme a regra da UF) e respeitar o prazo legal de transmissão, que é o fim do primeiro dia útil seguinte.
+Obrigações de quem emite em contingência, que ficam com o sistema do caixa: imprimir o DANFCE com os dizeres "EMITIDA EM CONTINGÊNCIA" e "Pendente de autorização" (o cupom de `GET /v1/nfce/:id/cupom` já vem com eles, e `?via=estabelecimento` devolve a segunda via), guardar a via do estabelecimento (ou o XML, conforme a regra da UF) e respeitar o prazo legal de transmissão, que é o fim do primeiro dia útil seguinte.
 
 Um pedido de NFC-e:
 

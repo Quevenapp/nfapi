@@ -109,6 +109,101 @@ const EmissaoNfe = {
 	required: ["id", "modelo", "ambiente", "serie", "numero", "situacao", "mensagens", "xmlDisponivel"],
 };
 
+const negrito = { type: "boolean" };
+const LinhaDoCupom = {
+	description: "Uma linha do cupom. O campo `tipo` diz o formato.",
+	oneOf: [
+		{
+			type: "object",
+			description: "Texto livre: razão social, dizeres obrigatórios, informações adicionais.",
+			properties: {
+				tipo: { const: "texto" },
+				texto,
+				alinhamento: { type: "string", enum: ["esquerda", "centro", "direita"] },
+				negrito,
+				tamanho: { type: "string", enum: ["normal", "dobrado"], description: "`dobrado`: altura e largura dobradas, quando a impressora tiver." },
+			},
+			required: ["tipo", "texto", "alinhamento", "negrito", "tamanho"],
+		},
+		{ type: "object", description: "Linha separadora, do jeito que o caixa costuma imprimir.", properties: { tipo: { const: "separador" } }, required: ["tipo"] },
+		{
+			type: "object",
+			description: "Item da venda, em campos: o caixa monta as colunas conforme a largura da bobina.",
+			properties: {
+				tipo: { const: "item" },
+				numero: { type: "integer" },
+				codigo: texto,
+				descricao: texto,
+				quantidade: { type: "number" },
+				unidade: texto,
+				valorUnitario: { type: "number" },
+				valorTotal: { type: "number" },
+				quantidadeTexto: { ...texto, description: "A quantidade já no formato de impressão (vírgula decimal)." },
+				valorUnitarioTexto: texto,
+				valorTotalTexto: texto,
+			},
+			required: ["tipo", "numero", "codigo", "descricao", "quantidade", "unidade", "valorUnitario", "valorTotal", "quantidadeTexto", "valorUnitarioTexto", "valorTotalTexto"],
+		},
+		{
+			type: "object",
+			description: "Rótulo à esquerda e valor à direita: totais, formas de pagamento, troco, tributos.",
+			properties: { tipo: { const: "par" }, rotulo: texto, valor: texto, negrito },
+			required: ["tipo", "rotulo", "valor", "negrito"],
+		},
+		{
+			type: "object",
+			description: "Chave de acesso: só os 44 caracteres. Imprima em 11 blocos de 4, separados por espaço.",
+			properties: { tipo: { const: "chave" }, chave: texto },
+			required: ["tipo", "chave"],
+		},
+		{
+			type: "object",
+			description: "QR Code: gere a imagem a partir do texto, sem alterar nem truncar, em preto e branco puro.",
+			properties: { tipo: { const: "qrcode" }, texto, tamanhoMinimoMm: { type: "number", description: "Lado mínimo da imagem impressa, em milímetros." } },
+			required: ["tipo", "texto", "tamanhoMinimoMm"],
+		},
+	],
+};
+
+const Cupom = {
+	type: "object",
+	description:
+		"Conteúdo do DANFE NFC-e, na ordem e com os dizeres do manual oficial (versão 6.0), para o caixa imprimir na bobina. " +
+		"Imprima as seções na ordem em que vêm e as linhas na ordem em que vêm. Não há largura, corte nem avanço de papel: isso é do caixa. " +
+		"Os textos fixos usam só caracteres das páginas de código comuns de impressora; os que vêm da nota (nomes, descrições, informações adicionais) saem como estão no XML.",
+	properties: {
+		id: texto,
+		situacao: { type: "string", description: "Situação da emissão no cofre. Uma nota `cancelada` ainda devolve o cupom: não o entregue ao consumidor." },
+		modelo: { const: "nfce" },
+		chaveAcesso: texto,
+		ambiente: AMBIENTE,
+		contingencia: { type: "boolean", description: "Nota emitida em contingência offline. Imprima também a via do estabelecimento (`?via=estabelecimento`)." },
+		pendenteDeAutorizacao: { type: "boolean", description: "A nota em contingência ainda não foi autorizada: o cupom sai com os dizeres de contingência e sem protocolo." },
+		via: { type: "string", enum: ["consumidor", "estabelecimento"] },
+		numero: { type: "integer" },
+		serie: { type: "integer" },
+		emitidaEm: texto,
+		protocolo: textoOuNulo,
+		autorizadaEm: textoOuNulo,
+		valorAPagar: { type: "number" },
+		qrCode: { ...texto, description: "O mesmo texto da linha `qrcode`, para quem monta o cupom por conta própria." },
+		urlConsulta: { ...texto, description: "Endereço de consulta pela chave de acesso." },
+		secoes: {
+			type: "array",
+			description: "Divisões do DANFE NFC-e que têm conteúdo, na ordem de impressão.",
+			items: {
+				type: "object",
+				properties: {
+					divisao: { type: "string", enum: ["cabecalho", "itens", "totais", "consulta", "consumidor", "identificacao", "qrcode", "mensagem_fiscal", "mensagem_contribuinte"] },
+					linhas: { type: "array", items: ref("LinhaDoCupom") },
+				},
+				required: ["divisao", "linhas"],
+			},
+		},
+	},
+	required: ["id", "situacao", "modelo", "chaveAcesso", "ambiente", "contingencia", "pendenteDeAutorizacao", "via", "numero", "serie", "emitidaEm", "valorAPagar", "qrCode", "urlConsulta", "secoes"],
+};
+
 const OpcoesNfce = {
 	type: "object",
 	properties: {
@@ -183,7 +278,7 @@ export const CODIGOS_DE_ERRO: Record<string, { status: number; quando: string }>
 	emissao_em_andamento: { status: 409, quando: "Já há um pedido com a mesma referência em andamento. Aguarde e consulte." },
 	referencia_com_conteudo_diferente: { status: 409, quando: "A referência já foi usada com outro conteúdo. Não repita: é um documento novo ou um erro do chamador." },
 	numero_ja_utilizado: { status: 409, quando: "NFS-e: o número informado no pedido já foi usado na série." },
-	nfe_nao_autorizada: { status: 409, quando: "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada." },
+	nfe_nao_autorizada: { status: 409, quando: "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada, ou cupom de NFC-e sem XML arquivado." },
 	nfse_nao_autorizada: { status: 409, quando: "Cancelamento de NFS-e que não está autorizada." },
 	faixa_em_uso: { status: 409, quando: "Inutilização de faixa que contém nota autorizada ou em andamento." },
 	serie_nao_cadastrada: { status: 422, quando: "A série do pedido não está cadastrada no cofre para o modelo e o ambiente." },
@@ -258,6 +353,22 @@ function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: un
 	rotas[`${base}/{id}/cancelamento/xml`] = {
 		get: { tags, summary: "Baixa o XML do evento de cancelamento (procEventoNFe)", parameters: [id], responses: { "200": xmlDoEvento, ...erros(401, 404) } },
 	};
+	if (doc === "nfce") {
+		rotas[`${base}/{id}/cupom`] = {
+			get: {
+				tags,
+				summary: "Conteúdo do DANFE NFC-e (cupom) em JSON, para imprimir na bobina",
+				description:
+					"Montado a partir do XML arquivado, com as divisões e os dizeres obrigatórios do manual do DANFE NFC-e. " +
+					"Serve para a nota autorizada e para a nota em contingência; nas demais situações (rejeitada sem XML, em processamento) responde 409 nfe_nao_autorizada.",
+				parameters: [
+					id,
+					{ name: "via", in: "query", schema: { type: "string", enum: ["consumidor", "estabelecimento"], default: "consumidor" }, description: "A via do estabelecimento só existe na nota em contingência; nas demais o cupom sai sempre como via do consumidor." },
+				],
+				responses: { "200": resposta("O cupom.", ref("Cupom")), ...erros(400, 401, 404, 409) },
+			},
+		};
+	}
 	if (doc === "nfe") {
 		rotas[`${base}/{id}/carta-correcao/{sequencia}/xml`] = {
 			get: {
@@ -421,6 +532,8 @@ export function contratoOpenApi(): Json {
 				Inutilizacao: esquema(InutilizacaoInput),
 				EmissaoNfe,
 				EmissaoNfse,
+				Cupom,
+				LinhaDoCupom,
 				InutilizacaoRegistrada: {
 					type: "object",
 					properties: {
