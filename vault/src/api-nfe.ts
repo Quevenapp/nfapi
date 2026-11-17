@@ -376,7 +376,7 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 	// Roda agora o trabalho que o agendador faz a cada 5 minutos: confere a SEFAZ e transmite a fila.
 	app.post("/admin/contingencia/processar", async (c) => {
 		const resumo = await executarAgendado(c.env, makeTransport(c.env));
-		return c.json({ resumo: resumo ?? { autorizadas: 0, rejeitadas: 0, aguardando: 0 }, notasPendentes: await banco.contarEmContingencia(c.env.DB) });
+		return c.json({ resumo: resumo?.contingencia ?? { autorizadas: 0, rejeitadas: 0, aguardando: 0 }, notasPendentes: await banco.contarEmContingencia(c.env.DB) });
 	});
 
 	app.get("/admin/series", async (c) => {

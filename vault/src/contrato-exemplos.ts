@@ -1,6 +1,8 @@
 // Exemplos de pedido usados no contrato da API (GET /v1/openapi.json) e nos
 // testes: se um exemplo deixar de ser válido, os testes falham.
 
+import { montarChave } from "./nfe/chave";
+
 const ENDERECO_EMITENTE = {
 	logradouro: "Rua das Flores",
 	numero: "100",
@@ -105,6 +107,9 @@ export const EXEMPLO_NFCE = {
 	pagamentos: [{ forma: "01", valor: 100 }],
 	troco: 40.1,
 } as const;
+
+/** Chave de acesso (fictícia, com dígito verificador válido) de uma NF-e emitida por um fornecedor. */
+export const EXEMPLO_CHAVE_RECEBIDA = montarChave({ cUF: "35", emissao: "2026-11-10", cnpj: "44555666000181", modelo: "55", serie: 1, numero: 101, tpEmis: "1", cNF: "87654321" });
 
 export const EXEMPLO_NFSE = {
 	ambiente: "homologacao",

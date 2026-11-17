@@ -23,7 +23,7 @@ import * as store from "./store";
 import type { Transport } from "./transport";
 
 type C = Context<Ctx>;
-type Status = 400 | 401 | 403 | 404 | 409 | 422 | 502;
+type Status = 400 | 401 | 403 | 404 | 409 | 422 | 429 | 502;
 
 export const erro = (c: C, status: Status, codigo: string, mensagem: string, extra: Record<string, unknown> = {}) =>
 	c.json({ erro: { codigo, mensagem }, ...extra }, status);

@@ -149,6 +149,39 @@ export const SETUP_HTML = String.raw`<!doctype html>
 			<p id="notes-message" role="status"></p>
 		</section>
 
+		<section class="card">
+			<h2>Notas recebidas</h2>
+			<p>Notas fiscais que outras empresas emitiram contra o CNPJ deste certificado. O cofre as baixa do Ambiente Nacional da NF-e e as entrega aos seus sistemas pela API.</p>
+			<p class="muted small">Só este cofre deve consultar as notas recebidas deste CNPJ. Se outro sistema também consultar (um ERP antigo, o sistema do contador), o Ambiente Nacional bloqueia as consultas por uma hora a cada desencontro.</p>
+			<ul id="dfe-status" class="results"></ul>
+			<form id="dfe-form">
+				<div class="grid">
+					<div>
+						<label for="dfe-ambiente">Ambiente</label>
+						<select id="dfe-ambiente">
+							<option value="homologacao">Homologação</option>
+							<option value="producao">Produção</option>
+						</select>
+					</div>
+					<div>
+						<label for="dfe-uf">UF do estabelecimento</label>
+						<select id="dfe-uf"></select>
+					</div>
+				</div>
+				<label class="check"><input type="checkbox" id="dfe-auto"> Consultar sozinho, no ritmo que o Ambiente Nacional permite (uma vez por hora)</label>
+				<label class="check"><input type="checkbox" id="dfe-ciencia"> Registrar sozinho a ciência da operação das notas novas</label>
+				<p class="muted small">A ciência libera o XML completo da nota. É um evento fiscal em nome da empresa: declara que ela sabe da nota, sem confirmar a operação. Desligada, a ciência é registrada nota a nota, aqui ou pela API.</p>
+				<div class="row">
+					<button type="submit">Salvar</button>
+					<button type="button" id="dfe-sync" class="ghost">Consultar agora</button>
+				</div>
+			</form>
+			<p id="dfe-message" role="status"></p>
+			<p id="recebidas-empty" class="muted" hidden>Nenhuma nota recebida neste cofre ainda.</p>
+			<ul id="recebidas" class="notes"></ul>
+			<p id="recebidas-message" role="status"></p>
+		</section>
+
 		<section class="card" id="update-section">
 			<h2>Atualização</h2>
 			<p id="update-status"></p>
@@ -218,6 +251,8 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.9em; overflo
 .ok { color: var(--ok); }
 .warn { color: var(--warn); font-weight: 600; }
 label { display: block; font-weight: 600; font-size: 0.9rem; margin: 12px 0 4px; }
+label.check { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; }
+label.check input { margin-top: 4px; }
 input[type="text"], input[type="password"], input[type="file"], textarea, select {
 	width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
 	background: var(--bg); color: var(--text); font: inherit;
@@ -497,6 +532,139 @@ export const SETUP_JS = String.raw`(function () {
 		});
 	}
 
+	// ---------- Notas recebidas (distribuição de DF-e e manifestação do destinatário) ----------
+
+	var UFS = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO"];
+	var MANIFESTACOES = {
+		ciencia: "Ciência da operação", confirmacao: "Confirmação da operação",
+		desconhecimento: "Desconhecimento da operação", nao_realizada: "Operação não realizada"
+	};
+	var distribuicoes = [];
+	UFS.forEach(function (uf) { $("dfe-uf").appendChild(el("option", { value: uf, text: uf })); });
+
+	// Mostra no formulário a configuração do ambiente escolhido.
+	function preencherDistribuicao() {
+		var atual = distribuicoes.filter(function (d) { return d.ambiente === $("dfe-ambiente").value; })[0];
+		if (atual) $("dfe-uf").value = atual.uf;
+		$("dfe-auto").checked = !!(atual && atual.consultaAutomatica);
+		$("dfe-ciencia").checked = !!(atual && atual.cienciaAutomatica);
+		$("dfe-ciencia").disabled = !$("dfe-auto").checked;
+		$("dfe-sync").hidden = !atual;
+	}
+
+	async function baixarRecebida(nota, pdf) {
+		var res = await fetch("/admin/recebidas/arquivo?id=" + encodeURIComponent(nota.id) + (pdf ? "&tipo=danfe" : ""), { headers: { authorization: "Bearer " + secret } });
+		if (!res.ok) throw new Error("Não foi possível baixar o arquivo (HTTP " + res.status + ").");
+		var url = URL.createObjectURL(await res.blob());
+		var link = el("a", { href: url, download: nota.chaveAcesso + (pdf ? "-danfe.pdf" : (nota.xmlDisponivel ? "-nfe.xml" : "-resumo.xml")) });
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(url);
+	}
+
+	function formManifestar(nota, item) {
+		var tipo = el("select", {}, Object.keys(MANIFESTACOES).map(function (t) { return el("option", { value: t, text: MANIFESTACOES[t] }); }));
+		var justificativa = el("textarea", { rows: "2", maxlength: "255", placeholder: "Por que a operação não se realizou (mínimo de 15 caracteres)" });
+		var rotulo = el("label", { text: "Justificativa" });
+		var confirmar = el("button", { type: "button", class: "ghost", text: "Registrar manifestação" });
+		var desistir = el("button", { type: "button", class: "ghost", text: "Voltar" });
+		var form = el("div", { class: "cancel-form" }, [el("label", { text: "Manifestação" }), tipo, rotulo, justificativa, el("div", { class: "row" }, [confirmar, desistir])]);
+		function ajustar() { rotulo.hidden = justificativa.hidden = tipo.value !== "nao_realizada"; }
+		tipo.addEventListener("change", ajustar);
+		ajustar();
+		desistir.addEventListener("click", function () { form.remove(); });
+		confirmar.addEventListener("click", async function () {
+			var pedido = { id: nota.id, tipo: tipo.value };
+			if (tipo.value === "nao_realizada") {
+				if (justificativa.value.trim().length < 15) return message("recebidas-message", "A justificativa precisa ter ao menos 15 caracteres.", "error");
+				pedido.justificativa = justificativa.value.trim();
+			}
+			var aviso = "Registrar \"" + MANIFESTACOES[tipo.value] + "\" para esta nota?" +
+				(nota.ambiente === "producao" ? " É um evento fiscal em nome da empresa, registrado no Ambiente Nacional." : "");
+			if (!confirm(aviso)) return;
+			message("recebidas-message", "Registrando a manifestação…");
+			try {
+				var r = await busy(confirmar, function () { return api("POST", "/admin/recebidas/manifestar", pedido); });
+				message("recebidas-message", r.repetido ? "Esta manifestação já estava registrada." : "Manifestação registrada.", "ok");
+				await renderRecebidas();
+				await renderAudit();
+			} catch (err) {
+				message("recebidas-message", err.message, "error");
+			}
+		});
+		item.appendChild(form);
+	}
+
+	async function renderRecebidas() {
+		var data = await api("GET", "/admin/distribuicao");
+		distribuicoes = data.distribuicoes;
+		var estado = $("dfe-status");
+		clear(estado);
+		distribuicoes.forEach(function (d) {
+			var partes = [d.consultaAutomatica ? "consulta automática ligada" + (d.cienciaAutomatica ? ", com ciência automática" : "") : "consulta só quando pedida"];
+			if (d.ultimaConsulta) partes.push("última consulta em " + date(d.ultimaConsulta) + (d.mensagem ? " (" + d.mensagem.codigo + ": " + d.mensagem.descricao + ")" : ""));
+			if (d.proximaConsulta) partes.push((d.bloqueada ? "bloqueada pelo Ambiente Nacional até " : "próxima consulta a partir de ") + date(d.proximaConsulta));
+			estado.appendChild(el("li", {}, [
+				el("span", {}, [
+					el("strong", { text: (d.ambiente === "producao" ? "Produção" : "Homologação") + " · CNPJ " + d.cnpj + " · " + d.uf }),
+					el("span", { class: "detail", text: partes.join(" · ") })
+				]),
+				el("span", { class: d.bloqueada ? "bad" : "ok", text: d.bloqueada ? "Bloqueada" : (d.consultaAutomatica ? "Automática" : "Manual") })
+			]));
+		});
+		preencherDistribuicao();
+
+		var lista = await api("GET", "/admin/recebidas");
+		var list = $("recebidas");
+		clear(list);
+		$("recebidas-empty").hidden = lista.recebidas.length > 0;
+		lista.recebidas.forEach(function (n) {
+			var cancelada = n.situacao === "cancelada";
+			var denegada = n.situacao === "denegada";
+			var detalhe = (n.emitente.nome || "Emitente") + " (" + n.emitente.documento + ")" +
+				" · chave " + n.chaveAcesso +
+				" · " + (n.ambiente === "producao" ? "produção" : "homologação") +
+				(n.valor !== null ? " · R$ " + n.valor.toFixed(2).replace(".", ",") : "") +
+				(n.emitidaEm ? " · emitida em " + date(n.emitidaEm) : "") +
+				(n.papel === "terceiro" ? " · a empresa não é a destinatária" : "") +
+				(n.manifestacao ? " · " + MANIFESTACOES[n.manifestacao.tipo].toLowerCase() + " em " + date(n.manifestacao.registradaEm) : "") +
+				(n.cienciaAutomaticaRecusada ? " · ciência automática recusada: " + n.cienciaAutomaticaRecusada.descricao : "");
+			var acts = el("div", { class: "acts" });
+			var arquivo = el("button", { type: "button", class: "ghost", text: n.xmlDisponivel ? "XML da NF-e" : "Resumo (XML)" });
+			arquivo.addEventListener("click", function () {
+				busy(arquivo, function () { return baixarRecebida(n, false); }).catch(function (err) { message("recebidas-message", err.message, "error"); });
+			});
+			if (n.xmlDisponivel || n.situacao) acts.appendChild(arquivo);
+			if (n.xmlDisponivel) {
+				var pdf = el("button", { type: "button", class: "ghost", text: "DANFE (PDF)" });
+				pdf.addEventListener("click", function () {
+					busy(pdf, function () { return baixarRecebida(n, true); }).catch(function (err) { message("recebidas-message", err.message, "error"); });
+				});
+				acts.appendChild(pdf);
+			}
+			var item = el("li", {}, [
+				el("div", { class: "head" }, [
+					el("span", { text: "NF-e nº " + n.numero + " · série " + n.serie }),
+					el("span", {
+						class: "badge " + (cancelada || denegada ? "bad" : (n.xmlDisponivel ? "ok" : "warn")),
+						text: cancelada ? "Cancelada" : (denegada ? "Denegada" : (n.xmlDisponivel ? "XML completo" : "Só o resumo"))
+					})
+				]),
+				el("span", { class: "detail", text: detalhe }),
+				acts
+			]);
+			if (n.papel === "destinatario") {
+				var manifestar = el("button", { type: "button", class: "ghost", text: "Manifestar" });
+				manifestar.addEventListener("click", function () {
+					if (!item.querySelector(".cancel-form")) formManifestar(n, item);
+				});
+				acts.appendChild(manifestar);
+			}
+			list.appendChild(item);
+		});
+	}
+
 	// ---------- Séries de NF-e e NFC-e ----------
 
 	async function renderSeries() {
@@ -567,6 +735,7 @@ export const SETUP_JS = String.raw`(function () {
 		await renderSeries();
 		await renderLogo();
 		await renderNotes();
+		await renderRecebidas();
 		await renderUpdate(false);
 		await renderAudit();
 	}
@@ -694,6 +863,50 @@ export const SETUP_JS = String.raw`(function () {
 			await renderAudit();
 		} catch (err) {
 			message("logo-message", err.message, "error");
+		}
+	});
+
+	$("dfe-ambiente").addEventListener("change", preencherDistribuicao);
+	$("dfe-auto").addEventListener("change", function () {
+		$("dfe-ciencia").disabled = !$("dfe-auto").checked;
+		if (!$("dfe-auto").checked) $("dfe-ciencia").checked = false;
+	});
+
+	$("dfe-form").addEventListener("submit", async function (ev) {
+		ev.preventDefault();
+		var pedido = {
+			ambiente: $("dfe-ambiente").value,
+			uf: $("dfe-uf").value,
+			consultaAutomatica: $("dfe-auto").checked,
+			cienciaAutomatica: $("dfe-auto").checked && $("dfe-ciencia").checked
+		};
+		if (pedido.cienciaAutomatica && pedido.ambiente === "producao" &&
+			!confirm("Ligar a ciência automática em produção? O cofre passa a registrar, em nome da empresa, a ciência de cada nota nova emitida contra o CNPJ.")) return;
+		try {
+			await busy(ev.submitter, function () { return api("PUT", "/admin/distribuicao", pedido); });
+			message("dfe-message", "Configuração salva.", "ok");
+			await renderRecebidas();
+			await renderAudit();
+		} catch (err) {
+			message("dfe-message", err.message, "error");
+		}
+	});
+
+	$("dfe-sync").addEventListener("click", async function (ev) {
+		message("dfe-message", "Consultando o Ambiente Nacional… a primeira conexão pode levar alguns segundos.");
+		try {
+			var r = await busy(ev.currentTarget, function () { return api("POST", "/admin/distribuicao/sincronizar", { ambiente: $("dfe-ambiente").value }); });
+			var d = r.distribuicao;
+			var texto = !r.consultou
+				? "Nada foi consultado: " + (d.proximaConsulta ? "o Ambiente Nacional só aceita nova consulta a partir de " + date(d.proximaConsulta) + "." : "já há uma consulta em andamento.")
+				: (r.documentos > 0
+					? r.documentos + " documento(s) recebido(s), " + r.notasNovas + " nota(s) nova(s)."
+					: "Nenhum documento novo" + (d.mensagem ? " (" + d.mensagem.codigo + ": " + d.mensagem.descricao + ")" : "") + ".");
+			message("dfe-message", texto, r.consultou && !d.bloqueada ? "ok" : "warn");
+			await renderRecebidas();
+			await renderAudit();
+		} catch (err) {
+			message("dfe-message", err.message, "error");
 		}
 	});
 

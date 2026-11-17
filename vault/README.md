@@ -57,6 +57,10 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 | `GET /v1/nfce/:id/cupom` | NFC-e: conteúdo do DANFE NFC-e em JSON, para imprimir na bobina |
 | `GET /v1/nfce/:id/danfce` | NFC-e: DANFE NFC-e em PDF, na largura da bobina (`?largura=80` ou `58`) |
 | `GET /v1/cofre/logotipo` | Logotipo cadastrado no cofre, para o sistema do caixa imprimir no cupom |
+| `GET /v1/nfe-recebidas` | Notas que outras empresas emitiram contra o CNPJ do titular (`?depois=` lê só o que mudou) |
+| `POST /v1/nfe-recebidas/:id/manifestar` | Manifestação do destinatário: ciência, confirmação, desconhecimento ou operação não realizada |
+| `GET /v1/nfe-recebidas/:id/xml` e `/danfe` | XML completo e DANFE da nota recebida, depois da manifestação |
+| `GET /v1/distribuicao` | Onde a consulta das notas recebidas parou e quando sai a próxima |
 | `POST /v1/inutilizacoes` | NF-e e NFC-e: inutiliza uma faixa de numeração (extinta em SP, AC e BA) |
 | `GET /v1/series` | Séries cadastradas e o próximo número de cada uma |
 | `GET /v1/cofre` | Versão, atualização pendente, validade do certificado e ambientes liberados |
@@ -73,7 +77,7 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 - **Cupom da NFC-e.** `GET /v1/nfce/:id/cupom` devolve o conteúdo do DANFE NFC-e já organizado: as divisões na ordem do manual oficial, os dizeres obrigatórios, os itens em campos, os totais e pagamentos como pares de rótulo e valor, a chave de acesso e o texto do QR Code. O sistema do caixa transforma isso na impressão da bobina (58 ou 80 mm); o cofre não conhece impressora.
 - **DANFE e DANFE NFC-e em PDF.** O cofre gera os dois a partir do XML arquivado, a cada pedido, sem guardar o PDF. O DANFE da NF-e sai em A4, com canhoto, código de barras da chave, duplicatas, transportador e folhas de continuação quando os itens não cabem; a nota cancelada leva a marca CANCELADA e a de homologação, SEM VALOR FISCAL. O DANFE NFC-e sai na largura da bobina, com um ponto do PDF por ponto da impressora térmica (576 de largura para 80 mm, 384 para 58 mm): convertido em imagem nessa largura, o QR Code fica com módulos inteiros. Os totais de IBS, CBS e Imposto Seletivo saem nas informações complementares do DANFE, porque o leiaute oficial ainda não tem campos para eles.
 - **Logotipo.** O emitente envia a imagem (PNG ou JPEG, até 300 KB) no painel do cofre; ela entra nos dois PDFs e fica disponível em `GET /v1/cofre/logotipo`.
-- **Ainda não há:** impressão da carta de correção, contingência da NF-e (SVC) e eventos além de cancelamento e carta de correção.
+- **Ainda não há:** impressão da carta de correção, contingência da NF-e (SVC) e, do emitente, eventos além de cancelamento e carta de correção.
 
 ### Contingência da NFC-e
 
@@ -112,6 +116,23 @@ curl -X POST https://SEU-COFRE.workers.dev/v1/nfce \
 ```
 
 A resposta traz `chaveAcesso`, `protocolo`, `numero`, `valor` e, na NFC-e, `qrCode` e `urlConsulta`. Um exemplo de NF-e está no contrato.
+
+### NF-e recebidas
+
+O cofre baixa do Ambiente Nacional da NF-e as notas que outras empresas emitiram contra o CNPJ do certificado (distribuição de DF-e) e registra a manifestação do destinatário. Tem de ser o cofre, porque as duas coisas exigem o certificado.
+
+> Estado desta parte: os pedidos e a leitura das respostas seguem as notas técnicas 2014.002 (v1.40) e 2020.001 e estão cobertos por testes com um Ambiente Nacional simulado. Ainda não houve teste contra o serviço real.
+
+- **Como liga.** No painel do cofre, em "Notas recebidas", o emitente informa a UF do estabelecimento e escolhe se o cofre consulta sozinho. Vem desligado.
+- **Um só consultante por CNPJ.** O Ambiente Nacional entrega os documentos numa sequência (NSU) e bloqueia por uma hora o CNPJ que consulta fora dela ou antes da hora. Por isso o último NSU e o horário da próxima consulta ficam só no cofre: o seu sistema lê o que já chegou, e não manda consultar. Se outro programa (um ERP antigo, o sistema do contador) consultar o mesmo CNPJ, os dois se atrapalham.
+- **Ritmo.** O cofre baixa em lotes de 50 até alcançar o último documento e então espera uma hora, que é a regra do serviço. Na primeira consulta de um CNPJ não vem nada: o Ambiente Nacional só passa a gerar a sequência a partir dela, e o que foi emitido antes só se alcança pela chave de acesso.
+- **Primeiro o resumo, depois o XML.** O destinatário recebe de início só o resumo da nota (emitente, valor, data, situação). O XML completo é liberado depois da manifestação: ciência, confirmação ou operação não realizada.
+- **Leitura pelo seu sistema.** `GET /v1/nfe-recebidas?depois=N` devolve as notas em ordem de `sequencia`, que cresce a cada mudança (o XML chegou, a nota foi cancelada, foi manifestada). Guarde `ultimaSequencia` e passe na leitura seguinte. `papel` diz se o titular é o `destinatario` ou um `terceiro` (transportador ou autorizado a baixar o XML).
+- **Manifestação.** `POST /v1/nfe-recebidas/:id/manifestar` com `tipo` (`ciencia`, `confirmacao`, `desconhecimento`, `nao_realizada`); a operação não realizada pede `justificativa`. `POST /v1/nfe-recebidas/manifestar` faz o mesmo pela chave de acesso, até de nota que o cofre ainda não recebeu. Repetir a mesma manifestação não envia nada de novo. A conclusiva pode ser trocada (vale a última), com até dois registros de cada tipo. Depois de uma manifestação que libera o XML, o cofre já tenta baixá-lo pela chave.
+- **Ciência automática.** Opção do painel, desligada por padrão: o cofre registra a ciência da operação de cada nota nova, o que libera o XML sem ninguém pedir. É um evento fiscal em nome da empresa (declara que ela sabe da nota, sem confirmar a operação).
+- **Consulta por chave.** `POST /v1/distribuicao/consultar-chave` busca uma nota específica dos últimos 90 dias. O serviço aceita 20 por hora; o cofre para em 18.
+- **Tudo o que chegou.** `GET /v1/distribuicao/documentos` lista os documentos na ordem de chegada, inclusive os que não são nota recebida, como a manifestação que um cliente registrou numa nota emitida pelo titular.
+- **Ainda não há:** preenchimento automático de lacunas na sequência, aviso (webhook) quando chega nota, e CT-e ou NFS-e recebidos.
 
 ### NFS-e
 

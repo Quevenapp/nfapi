@@ -2,6 +2,7 @@
 // código. É a área que o monitor de IA pode atualizar sozinho quando os testes
 // passam (ver plano: "atualização por risco").
 
+import nfeAmbienteNacional from "./nfe-ambiente-nacional.json";
 import nfeAutorizadores from "./nfe-autorizadores.json";
 import nfeStatus from "./nfe-status-homologacao.json";
 import nfse from "./nfse-nacional.json";
@@ -76,6 +77,19 @@ export function ufsAtendidas(modelo: "55" | "65"): string[] {
 	return Object.keys(tabela.ufs)
 		.filter((uf) => modelo === "55" || tabela.nfce?.[uf])
 		.sort();
+}
+
+// ---------- NF-e: Ambiente Nacional (distribuição de DF-e e manifestação) ----------
+
+export interface AmbienteNacional {
+	/** NFeDistribuicaoDFe: notas e eventos de interesse do titular. */
+	distribuicao: string;
+	/** RecepcaoEvento 4.00: manifestação do destinatário. */
+	evento: string;
+}
+
+export function ambienteNacional(ambiente: Ambiente): AmbienteNacional {
+	return (nfeAmbienteNacional as unknown as Record<Ambiente, AmbienteNacional>)[ambiente];
 }
 
 // ---------- NF-e / NFC-e: serviço de status em homologação (tabela parcial) ----------

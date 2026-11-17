@@ -23,7 +23,7 @@ const app = createApp((env) => new ContainerTransport((env as Env).MTLS));
 
 export default {
 	fetch: app.fetch,
-	// Cron Trigger: transmite as NFC-e em contingência quando a SEFAZ volta.
+	// Cron Trigger: transmite as NFC-e em contingência quando a SEFAZ volta e baixa as notas recebidas.
 	scheduled(_evento, env, ctx) {
 		ctx.waitUntil(executarAgendado(env, new ContainerTransport(env.MTLS)));
 	},

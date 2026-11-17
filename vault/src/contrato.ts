@@ -5,10 +5,11 @@
 // então o contrato não tem como divergir do que o cofre aceita.
 
 import { z } from "zod";
-import { EXEMPLO_NFCE, EXEMPLO_NFE, EXEMPLO_NFSE } from "./contrato-exemplos";
+import { EXEMPLO_CHAVE_RECEBIDA, EXEMPLO_NFCE, EXEMPLO_NFE, EXEMPLO_NFSE } from "./contrato-exemplos";
 import { CancelamentoNfe, CartaCorrecao, InutilizacaoInput, NfceInput, NfeInput } from "./nfe/schema";
 import { CancelamentoInput, NfseInput } from "./nfse";
 import { VAULT_VERSION } from "./protocol";
+import { ConsultarChaveInput, ManifestacaoInput, ManifestacaoPorChaveInput, SincronizarInput } from "./recebidas/schema";
 
 type Json = Record<string, unknown>;
 
@@ -34,6 +35,7 @@ const ERROS: Record<number, string> = {
 	404: "Emissão inexistente.",
 	409: "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
 	422: "Recusado pelo governo ou barrado pelo cofre antes de transmitir. Com rejeição, o corpo traz a emissão e as mensagens (cStat e xMotivo).",
+	429: "Notas recebidas: o Ambiente Nacional bloqueou as consultas do CNPJ por uma hora, ou o limite de consultas por chave foi atingido. `erro.mensagem` diz a partir de quando tentar.",
 	502: "Sem resposta conclusiva do governo. Repita o pedido com a mesma referência: o cofre consulta antes de reenviar.",
 	500: "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
 	503: "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
@@ -298,11 +300,250 @@ export const CODIGOS_DE_ERRO: Record<string, { status: number; quando: string }>
 	inutilizacao_extinta: { status: 422, quando: "A UF não tem mais inutilização de numeração (SP, AC e BA)." },
 	host_nao_permitido: { status: 422, quando: "Falha interna: o cofre recusou transmitir para um endereço que não é do governo." },
 	certificado_do_cliente_invalido: { status: 422, quando: "O governo recusou o certificado na conexão." },
+	distribuicao_nao_configurada: { status: 409, quando: "Notas recebidas: o emitente ainda não informou a UF do estabelecimento na tela do cofre." },
+	xml_indisponivel: { status: 409, quando: "Nota recebida de que o cofre só tem o resumo: o XML completo (e o DANFE) só existe depois da manifestação do destinatário." },
+	manifestacao_ja_registrada: { status: 409, quando: "Ciência da operação pedida depois de outra manifestação da mesma nota." },
+	chave_de_acesso_invalida: { status: 422, quando: "Notas recebidas: a chave de acesso não é de uma NF-e (modelo 55) ou o dígito verificador não confere." },
+	justificativa_obrigatoria: { status: 422, quando: "Operação não realizada sem a justificativa de 15 a 255 caracteres." },
+	limite_de_manifestacoes: { status: 422, quando: "A nota já tem duas manifestações conclusivas do mesmo tipo (o máximo, contando a retificação)." },
+	manifestacao_rejeitada: { status: 422, quando: "O Ambiente Nacional rejeitou a manifestação (fora do prazo, nota cancelada...); `mensagens` traz cStat e xMotivo." },
+	nota_nao_localizada: { status: 422, quando: "Consulta por chave: o Ambiente Nacional não tem a nota disponível para o CNPJ (mais de 90 dias, chave de outra empresa ou nota ainda não recebida por ele)." },
+	consulta_rejeitada: { status: 422, quando: "O Ambiente Nacional rejeitou a consulta por chave; `mensagens` traz cStat e xMotivo." },
+	consumo_indevido: { status: 429, quando: "O Ambiente Nacional bloqueou as consultas do CNPJ por uma hora (cStat 656). Nada sai do cofre até o horário em `mensagem`." },
+	limite_de_consultas: { status: 429, quando: "Consulta por chave: o cofre atingiu 18 consultas em uma hora (o Ambiente Nacional bloqueia a partir de 20)." },
 	sem_resposta_conclusiva: { status: 502, quando: "A resposta do governo se perdeu ou não foi conclusiva. Na NF-e e NFC-e, chame /consultar; em qualquer documento, repetir com a mesma referência consulta antes de reenviar. Na NFC-e, `contingencia: \"automatica\"` troca este erro por uma nota em contingência." },
 	sem_conexao: { status: 200, quando: "Só em GET /v1/sefaz/status, dentro de `mensagem.codigo`: não foi possível falar com a SEFAZ." },
 	erro_interno: { status: 500, quando: "Falha inesperada do cofre." },
 	cofre_nao_configurado: { status: 503, quando: "O segredo do cofre está ausente ou é fraco demais: a instalação não foi concluída." },
 };
+
+// ---------- NF-e recebidas (distribuição de DF-e e manifestação do destinatário) ----------
+
+const inteiro = { type: "integer" };
+const ManifestacaoRegistrada = {
+	type: "object",
+	properties: {
+		tipo: { type: "string", enum: ["ciencia", "confirmacao", "desconhecimento", "nao_realizada"] },
+		sequencia: { ...inteiro, description: "1, ou 2 na retificação de uma manifestação conclusiva." },
+		protocolo: { ...textoOuNulo, description: "Nulo quando o evento já estava no Ambiente Nacional, registrado fora do cofre." },
+		registradaEm: dataHora,
+		justificativa: textoOuNulo,
+		origem: { type: "string", description: "`agendador` na ciência automática; senão, a chave de API (`chave:...`) ou o painel (`admin`)." },
+		xmlDisponivel: { type: "boolean" },
+	},
+};
+const NotaRecebida = {
+	type: "object",
+	description: "NF-e que outra empresa emitiu e que interessa ao titular do cofre. Nasce do resumo entregue pelo Ambiente Nacional e ganha o XML completo depois da manifestação do destinatário.",
+	properties: {
+		id: texto,
+		ambiente: AMBIENTE,
+		cnpj: { type: "string", description: "CNPJ do titular (ou da filial) a quem a nota interessa." },
+		chaveAcesso: texto,
+		sequencia: { ...inteiro, description: "Cresce a cada mudança da nota (XML que chegou, cancelamento, manifestação). É o cursor de leitura: guarde a maior que já viu e passe em `?depois=`." },
+		papel: { type: "string", enum: ["destinatario", "terceiro"], description: "`terceiro`: o titular é transportador ou autorizado a baixar o XML, não o destinatário. Só confronte com pedido de compra as notas de papel `destinatario`." },
+		emitente: { type: "object", properties: { documento: texto, nome: textoOuNulo, ie: textoOuNulo } },
+		serie: inteiro,
+		numero: inteiro,
+		emitidaEm: textoOuNulo,
+		autorizadaEm: textoOuNulo,
+		protocolo: textoOuNulo,
+		tipoOperacao: { type: ["string", "null"], enum: ["entrada", "saida", null], description: "Do ponto de vista do emitente da nota." },
+		valor: { type: ["number", "null"], description: "Valor total da nota (vNF)." },
+		situacao: { type: ["string", "null"], enum: ["autorizada", "cancelada", "denegada", null], description: "Nulo enquanto o cofre só conhece a chave (manifestação feita antes de o resumo chegar)." },
+		xmlDisponivel: { type: "boolean", description: "O cofre já tem o XML completo (nfeProc)? Antes da manifestação só há o resumo." },
+		manifestacao: { oneOf: [ref("ManifestacaoRegistrada"), { type: "null" }], description: "A última manifestação: é a que vale." },
+		manifestacoes: { type: "array", items: ref("ManifestacaoRegistrada") },
+		cienciaAutomaticaRecusada: { type: ["object", "null"], properties: { codigo: texto, descricao: texto }, description: "Motivo da recusa quando a ciência automática foi tentada e o Ambiente Nacional não aceitou." },
+		eventos: { type: "array", items: ref("DocumentoDistribuido"), description: "Só na consulta de uma nota: os eventos recebidos (cancelamento, carta de correção...)." },
+		recebidaEm: dataHora,
+		atualizadaEm: dataHora,
+		repetido: { type: "boolean", description: "Só na resposta da manifestação: ela já estava registrada e nada novo foi enviado." },
+	},
+	required: ["id", "ambiente", "cnpj", "chaveAcesso", "sequencia", "papel", "xmlDisponivel", "manifestacoes"],
+};
+const DocumentoDistribuido = {
+	type: "object",
+	description: "Um documento entregue pelo Ambiente Nacional, como chegou.",
+	properties: {
+		sequencia: { ...inteiro, description: "Ordem de chegada no cofre; cursor de leitura de GET /v1/distribuicao/documentos." },
+		ambiente: AMBIENTE,
+		cnpj: texto,
+		nsu: { type: ["integer", "null"], description: "NSU do documento no Ambiente Nacional; nulo no que veio da consulta por chave." },
+		tipo: { type: "string", enum: ["resumo_nfe", "nfe", "resumo_evento", "evento", "outro"] },
+		schema: { type: "string", description: "Schema informado pelo Ambiente Nacional, como `resNFe_v1.01.xsd`." },
+		chaveAcesso: textoOuNulo,
+		evento: {
+			type: ["object", "null"],
+			properties: { codigo: { type: "string", description: "tpEvento: 110111 cancelamento, 110110 carta de correção, 2102xx manifestação do destinatário..." }, sequencia: inteiro, descricao: textoOuNulo, registradoEm: textoOuNulo, protocolo: textoOuNulo, autor: textoOuNulo },
+		},
+		recebidoEm: dataHora,
+	},
+};
+const Distribuicao = {
+	type: "object",
+	description: "Estado da consulta das notas recebidas de um CNPJ em um ambiente. O último NSU e a espera entre consultas são controlados só pelo cofre.",
+	properties: {
+		cnpj: texto,
+		ambiente: AMBIENTE,
+		uf: texto,
+		consultaAutomatica: { type: "boolean", description: "O cofre consulta sozinho (ligado pelo emitente na tela do cofre)." },
+		cienciaAutomatica: { type: "boolean", description: "O cofre registra sozinho a ciência da operação das notas novas (ligado pelo emitente)." },
+		ultimoNsu: inteiro,
+		maiorNsu: inteiro,
+		ultimaConsulta: { type: ["string", "null"], format: "date-time" },
+		proximaConsulta: { type: ["string", "null"], format: "date-time", description: "Antes deste instante o cofre não consulta: depois de \"nenhum documento\" o Ambiente Nacional exige uma hora de espera. Nulo quando já pode consultar." },
+		bloqueada: { type: "boolean", description: "O Ambiente Nacional bloqueou as consultas do CNPJ (consumo indevido) até `proximaConsulta`." },
+		mensagem: { type: ["object", "null"], properties: { codigo: texto, descricao: texto }, description: "Última resposta: 138 documentos localizados, 137 nenhum documento, 656 consumo indevido." },
+		consultasPorChave: { type: "object", properties: { naUltimaHora: inteiro, limite: inteiro } },
+	},
+};
+const Sincronizacao = {
+	type: "object",
+	properties: {
+		consultou: { type: "boolean", description: "false: a espera ainda não venceu (ou outra consulta está em andamento) e nada foi enviado ao Ambiente Nacional." },
+		lotes: inteiro,
+		documentos: inteiro,
+		notasNovas: inteiro,
+		distribuicao: ref("Distribuicao"),
+	},
+};
+const idRecebida = { name: "id", in: "path", required: true, schema: texto, description: "Id da nota recebida no cofre (`rcb_...`)." };
+const cursorDeLeitura = [
+	{ name: "depois", in: "query", schema: { type: "integer", default: 0 }, description: "Só o que tem `sequencia` maior que esta. Passe a `ultimaSequencia` da leitura anterior." },
+	{ name: "limite", in: "query", schema: { type: "integer", default: 50, maximum: 200 } },
+	{ name: "ambiente", in: "query", schema: AMBIENTE },
+	{ name: "chaveAcesso", in: "query", schema: texto },
+];
+const paginaDe = (campo: string, item: Json) => ({
+	type: "object",
+	properties: {
+		[campo]: { type: "array", items: item },
+		ultimaSequencia: { ...inteiro, description: "Maior sequência desta página; sem itens, repete o `depois` do pedido." },
+		haMais: { type: "boolean" },
+	},
+});
+
+function rotasRecebidas(): Json {
+	const tags = ["NF-e recebidas"];
+	const nota = ref("NotaRecebida");
+	const manifestada = resposta("A nota, com a manifestação registrada agora ou antes (`repetido`).", nota);
+	return {
+		"/v1/nfe-recebidas": {
+			get: {
+				tags,
+				summary: "Lista as NF-e recebidas, na ordem da sequência de leitura",
+				description:
+					"Notas que outras empresas emitiram contra o CNPJ do titular, baixadas pelo cofre do Ambiente Nacional. " +
+					"Para acompanhar, guarde `ultimaSequencia` e passe em `?depois=`: a mesma nota volta a aparecer quando muda (o XML completo chegou, foi cancelada, foi manifestada). " +
+					"Ler esta lista não consulta o governo; quem consulta é o cofre, no ritmo que o Ambiente Nacional permite.",
+				parameters: cursorDeLeitura,
+				responses: { "200": resposta("Notas.", paginaDe("recebidas", nota)), ...erros(400, 401) },
+			},
+		},
+		"/v1/nfe-recebidas/manifestar": {
+			post: {
+				tags,
+				summary: "Registra a manifestação do destinatário pela chave de acesso",
+				description:
+					"Serve também para nota que o cofre ainda não recebeu (a chave veio do DANFE em papel, por exemplo). " +
+					"Ciência, confirmação e operação não realizada liberam o XML completo; o cofre tenta baixá-lo na mesma chamada. " +
+					"A manifestação conclusiva pode ser trocada: vale a última, com até dois registros de cada tipo. Há prazo contado da autorização da nota (10 dias para a ciência; o das conclusivas é o da NT 2020.001 vigente): fora dele o Ambiente Nacional rejeita (cStat 596). " +
+					"Em produção é um evento fiscal em nome do destinatário.",
+				requestBody: corpo(esquema(ManifestacaoPorChaveInput), { ambiente: "homologacao", chaveAcesso: EXEMPLO_CHAVE_RECEBIDA, tipo: "ciencia" }),
+				responses: { "200": manifestada, ...erros(400, 401, 403, 409, 422, 502) },
+			},
+		},
+		"/v1/nfe-recebidas/{id}": {
+			get: { tags, summary: "Consulta uma nota recebida, com os eventos", parameters: [idRecebida], responses: { "200": resposta("A nota.", nota), ...erros(401, 404) } },
+		},
+		"/v1/nfe-recebidas/{id}/xml": {
+			get: {
+				tags,
+				summary: "Baixa o XML completo da nota recebida (nfeProc)",
+				description: "Antes da manifestação do destinatário o cofre só tem o resumo e responde 409 xml_indisponivel.",
+				parameters: [idRecebida],
+				responses: { "200": xml, ...erros(401, 404, 409) },
+			},
+		},
+		"/v1/nfe-recebidas/{id}/danfe": {
+			get: {
+				tags,
+				summary: "DANFE da nota recebida, em PDF",
+				description: "Gerado a partir do XML completo, sem logotipo (o do cofre é o do titular, não o do emitente da nota). Nota cancelada sai com a marca de cancelada.",
+				parameters: [idRecebida],
+				responses: { "200": pdf("O DANFE, em A4."), ...erros(401, 404, 409) },
+			},
+		},
+		"/v1/nfe-recebidas/{id}/manifestar": {
+			post: {
+				tags,
+				summary: "Registra a manifestação do destinatário de uma nota recebida",
+				parameters: [idRecebida],
+				requestBody: corpo(esquema(ManifestacaoInput), { tipo: "confirmacao" }),
+				responses: { "200": manifestada, ...erros(400, 401, 403, 404, 409, 422, 502) },
+			},
+		},
+		"/v1/nfe-recebidas/{id}/manifestacoes/{tipo}/{sequencia}/xml": {
+			get: {
+				tags,
+				summary: "Baixa o XML de uma manifestação registrada pelo cofre (procEventoNFe)",
+				parameters: [
+					idRecebida,
+					{ name: "tipo", in: "path", required: true, schema: { type: "string", enum: ["ciencia", "confirmacao", "desconhecimento", "nao_realizada"] } },
+					{ name: "sequencia", in: "path", required: true, schema: { type: "integer", minimum: 1, maximum: 2 } },
+				],
+				responses: { "200": xmlDoEvento, ...erros(401, 404) },
+			},
+		},
+		"/v1/distribuicao": {
+			get: {
+				tags,
+				summary: "Estado da consulta das notas recebidas",
+				description: "Uma entrada por CNPJ e ambiente configurados pelo emitente. Lista vazia: as notas recebidas não foram configuradas na tela do cofre.",
+				responses: { "200": resposta("Estado.", { type: "object", properties: { distribuicoes: { type: "array", items: ref("Distribuicao") } } }), ...erros(401) },
+			},
+		},
+		"/v1/distribuicao/sincronizar": {
+			post: {
+				tags,
+				summary: "Consulta o Ambiente Nacional agora, se a espera já venceu",
+				description:
+					"Não é preciso chamar quando a consulta automática está ligada. Dentro da espera exigida pelo Ambiente Nacional a resposta é 200 com `consultou: false`: nada é enviado, e chamar de novo não adianta antes de `proximaConsulta`.",
+				requestBody: corpo(esquema(SincronizarInput), { ambiente: "homologacao" }),
+				responses: { "200": resposta("O que a consulta trouxe.", ref("Sincronizacao")), ...erros(400, 401, 403, 409, 422) },
+			},
+		},
+		"/v1/distribuicao/consultar-chave": {
+			post: {
+				tags,
+				summary: "Busca uma NF-e pela chave de acesso",
+				description:
+					"Traz a nota (não os eventos) recebida pelo Ambiente Nacional nos últimos 90 dias em que o CNPJ é destinatário, transportador ou autorizado. " +
+					"O destinatário que ainda não se manifestou recebe só o resumo. Limite de 18 consultas por hora.",
+				requestBody: corpo(esquema(ConsultarChaveInput), { ambiente: "homologacao", chaveAcesso: EXEMPLO_CHAVE_RECEBIDA }),
+				responses: { "200": resposta("A nota.", nota), ...erros(400, 401, 403, 409, 422, 429, 502) },
+			},
+		},
+		"/v1/distribuicao/documentos": {
+			get: {
+				tags,
+				summary: "Tudo o que o Ambiente Nacional entregou, na ordem de chegada",
+				description: "Inclui o que não é nota recebida: eventos das notas que o próprio titular emitiu (a manifestação de um cliente, por exemplo) e documentos que o cofre guarda sem interpretar.",
+				parameters: cursorDeLeitura,
+				responses: { "200": resposta("Documentos.", paginaDe("documentos", ref("DocumentoDistribuido"))), ...erros(400, 401) },
+			},
+		},
+		"/v1/distribuicao/documentos/{sequencia}/xml": {
+			get: {
+				tags,
+				summary: "Baixa o XML de um documento distribuído",
+				parameters: [{ name: "sequencia", in: "path", required: true, schema: inteiro }],
+				responses: { "200": { description: "O XML, como o Ambiente Nacional entregou.", content: { "application/xml": { schema: texto } } }, ...erros(401, 404) },
+			},
+		},
+	};
+}
 
 /** Rotas de NF-e ou de NFC-e: os dois modelos têm o mesmo desenho. */
 function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: unknown): Json {
@@ -441,10 +682,11 @@ export function contratoOpenApi(): Json {
 		},
 		servers: [{ url: "https://{cofre}", variables: { cofre: { default: "nfapi-cofre.sua-conta.workers.dev", description: "Endereço do seu cofre." } } }],
 		security: [{ chaveDeApi: [] }],
-		tags: [{ name: "NF-e" }, { name: "NFC-e" }, { name: "NFS-e" }, { name: "Numeração" }, { name: "Cofre" }],
+		tags: [{ name: "NF-e" }, { name: "NFC-e" }, { name: "NFS-e" }, { name: "NF-e recebidas" }, { name: "Numeração" }, { name: "Cofre" }],
 		paths: {
 			...rotasNfe("nfe", "NF-e", "PedidoNfe", EXEMPLO_NFE),
 			...rotasNfe("nfce", "NFC-e", "PedidoNfce", EXEMPLO_NFCE),
+			...rotasRecebidas(),
 			"/v1/nfse": {
 				post: {
 					tags: ["NFS-e"],
@@ -578,6 +820,11 @@ export function contratoOpenApi(): Json {
 				EmissaoNfse,
 				Cupom,
 				LinhaDoCupom,
+				NotaRecebida,
+				ManifestacaoRegistrada,
+				DocumentoDistribuido,
+				Distribuicao,
+				Sincronizacao,
 				InutilizacaoRegistrada: {
 					type: "object",
 					properties: {

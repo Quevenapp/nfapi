@@ -2,7 +2,7 @@
 	"openapi": "3.1.0",
 	"info": {
 		"title": "Cofre NFapi",
-		"version": "0.8.0",
+		"version": "0.9.0",
 		"description": "API de emissão de notas fiscais do cofre NFapi, que roda na conta Cloudflare do emitente. Todas as chamadas levam uma chave de API criada na tela /setup do cofre. O cofre não calcula imposto: o sistema que chama informa bases, alíquotas e valores; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva. Erros vêm sempre como `{ \"erro\": { \"codigo\", \"mensagem\" } }`.",
 		"license": {
 			"name": "MIT"
@@ -33,6 +33,9 @@
 		},
 		{
 			"name": "NFS-e"
+		},
+		{
+			"name": "NF-e recebidas"
 		},
 		{
 			"name": "Numeração"
@@ -2054,6 +2057,1270 @@
 				}
 			}
 		},
+		"/v1/nfe-recebidas": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Lista as NF-e recebidas, na ordem da sequência de leitura",
+				"description": "Notas que outras empresas emitiram contra o CNPJ do titular, baixadas pelo cofre do Ambiente Nacional. Para acompanhar, guarde `ultimaSequencia` e passe em `?depois=`: a mesma nota volta a aparecer quando muda (o XML completo chegou, foi cancelada, foi manifestada). Ler esta lista não consulta o governo; quem consulta é o cofre, no ritmo que o Ambiente Nacional permite.",
+				"parameters": [
+					{
+						"name": "depois",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"default": 0
+						},
+						"description": "Só o que tem `sequencia` maior que esta. Passe a `ultimaSequencia` da leitura anterior."
+					},
+					{
+						"name": "limite",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"default": 50,
+							"maximum": 200
+						}
+					},
+					{
+						"name": "ambiente",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": [
+								"homologacao",
+								"producao"
+							]
+						}
+					},
+					{
+						"name": "chaveAcesso",
+						"in": "query",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Notas.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"recebidas": {
+											"type": "array",
+											"items": {
+												"$ref": "#/components/schemas/NotaRecebida"
+											}
+										},
+										"ultimaSequencia": {
+											"type": "integer",
+											"description": "Maior sequência desta página; sem itens, repete o `depois` do pedido."
+										},
+										"haMais": {
+											"type": "boolean"
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfe-recebidas/manifestar": {
+			"post": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Registra a manifestação do destinatário pela chave de acesso",
+				"description": "Serve também para nota que o cofre ainda não recebeu (a chave veio do DANFE em papel, por exemplo). Ciência, confirmação e operação não realizada liberam o XML completo; o cofre tenta baixá-lo na mesma chamada. A manifestação conclusiva pode ser trocada: vale a última, com até dois registros de cada tipo. Há prazo contado da autorização da nota (10 dias para a ciência; o das conclusivas é o da NT 2020.001 vigente): fora dele o Ambiente Nacional rejeita (cStat 596). Em produção é um evento fiscal em nome do destinatário.",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"tipo": {
+										"type": "string",
+										"enum": [
+											"ciencia",
+											"confirmacao",
+											"desconhecimento",
+											"nao_realizada"
+										],
+										"description": "ciencia: sabe da nota e ainda não tem a palavra final (libera o XML completo). confirmacao: a operação aconteceu. desconhecimento: não reconhece a operação. nao_realizada: a operação não se concretizou (recusa da mercadoria, por exemplo)."
+									},
+									"justificativa": {
+										"description": "Obrigatória na operação não realizada (15 a 255 caracteres); ignorada nas demais.",
+										"type": "string",
+										"minLength": 15,
+										"maxLength": 255
+									},
+									"ambiente": {
+										"default": "homologacao",
+										"type": "string",
+										"enum": [
+											"homologacao",
+											"producao"
+										]
+									},
+									"chaveAcesso": {
+										"type": "string",
+										"pattern": "^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$"
+									},
+									"cnpj": {
+										"description": "CNPJ do destinatário, quando é uma filial do titular do certificado.",
+										"type": "string",
+										"pattern": "^[0-9A-Z]{12}\\d{2}$"
+									}
+								},
+								"required": [
+									"tipo",
+									"chaveAcesso"
+								]
+							},
+							"example": {
+								"ambiente": "homologacao",
+								"chaveAcesso": "35261144555666000181550010000001011876543213",
+								"tipo": "ciencia"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "A nota, com a manifestação registrada agora ou antes (`repetido`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/NotaRecebida"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "A chave só opera em homologação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "Recusado pelo governo ou barrado pelo cofre antes de transmitir. Com rejeição, o corpo traz a emissão e as mensagens (cStat e xMotivo).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"502": {
+						"description": "Sem resposta conclusiva do governo. Repita o pedido com a mesma referência: o cofre consulta antes de reenviar.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfe-recebidas/{id}": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Consulta uma nota recebida, com os eventos",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da nota recebida no cofre (`rcb_...`)."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A nota.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/NotaRecebida"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfe-recebidas/{id}/xml": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Baixa o XML completo da nota recebida (nfeProc)",
+				"description": "Antes da manifestação do destinatário o cofre só tem o resumo e responde 409 xml_indisponivel.",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da nota recebida no cofre (`rcb_...`)."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "XML autorizado.",
+						"content": {
+							"application/xml": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfe-recebidas/{id}/danfe": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "DANFE da nota recebida, em PDF",
+				"description": "Gerado a partir do XML completo, sem logotipo (o do cofre é o do titular, não o do emitente da nota). Nota cancelada sai com a marca de cancelada.",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da nota recebida no cofre (`rcb_...`)."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "O DANFE, em A4.",
+						"content": {
+							"application/pdf": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfe-recebidas/{id}/manifestar": {
+			"post": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Registra a manifestação do destinatário de uma nota recebida",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da nota recebida no cofre (`rcb_...`)."
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"tipo": {
+										"type": "string",
+										"enum": [
+											"ciencia",
+											"confirmacao",
+											"desconhecimento",
+											"nao_realizada"
+										],
+										"description": "ciencia: sabe da nota e ainda não tem a palavra final (libera o XML completo). confirmacao: a operação aconteceu. desconhecimento: não reconhece a operação. nao_realizada: a operação não se concretizou (recusa da mercadoria, por exemplo)."
+									},
+									"justificativa": {
+										"description": "Obrigatória na operação não realizada (15 a 255 caracteres); ignorada nas demais.",
+										"type": "string",
+										"minLength": 15,
+										"maxLength": 255
+									}
+								},
+								"required": [
+									"tipo"
+								]
+							},
+							"example": {
+								"tipo": "confirmacao"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "A nota, com a manifestação registrada agora ou antes (`repetido`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/NotaRecebida"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "A chave só opera em homologação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "Recusado pelo governo ou barrado pelo cofre antes de transmitir. Com rejeição, o corpo traz a emissão e as mensagens (cStat e xMotivo).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"502": {
+						"description": "Sem resposta conclusiva do governo. Repita o pedido com a mesma referência: o cofre consulta antes de reenviar.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfe-recebidas/{id}/manifestacoes/{tipo}/{sequencia}/xml": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Baixa o XML de uma manifestação registrada pelo cofre (procEventoNFe)",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da nota recebida no cofre (`rcb_...`)."
+					},
+					{
+						"name": "tipo",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"enum": [
+								"ciencia",
+								"confirmacao",
+								"desconhecimento",
+								"nao_realizada"
+							]
+						}
+					},
+					{
+						"name": "sequencia",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "XML do evento com o retorno do governo, como deve ser guardado e entregue.",
+						"content": {
+							"application/xml": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/distribuicao": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Estado da consulta das notas recebidas",
+				"description": "Uma entrada por CNPJ e ambiente configurados pelo emitente. Lista vazia: as notas recebidas não foram configuradas na tela do cofre.",
+				"responses": {
+					"200": {
+						"description": "Estado.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"distribuicoes": {
+											"type": "array",
+											"items": {
+												"$ref": "#/components/schemas/Distribuicao"
+											}
+										}
+									}
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/distribuicao/sincronizar": {
+			"post": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Consulta o Ambiente Nacional agora, se a espera já venceu",
+				"description": "Não é preciso chamar quando a consulta automática está ligada. Dentro da espera exigida pelo Ambiente Nacional a resposta é 200 com `consultou: false`: nada é enviado, e chamar de novo não adianta antes de `proximaConsulta`.",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"ambiente": {
+										"default": "homologacao",
+										"type": "string",
+										"enum": [
+											"homologacao",
+											"producao"
+										]
+									},
+									"cnpj": {
+										"description": "Filial a consultar; padrão: o titular do certificado.",
+										"type": "string",
+										"pattern": "^[0-9A-Z]{12}\\d{2}$"
+									}
+								}
+							},
+							"example": {
+								"ambiente": "homologacao"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "O que a consulta trouxe.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Sincronizacao"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "A chave só opera em homologação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "Recusado pelo governo ou barrado pelo cofre antes de transmitir. Com rejeição, o corpo traz a emissão e as mensagens (cStat e xMotivo).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/distribuicao/consultar-chave": {
+			"post": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Busca uma NF-e pela chave de acesso",
+				"description": "Traz a nota (não os eventos) recebida pelo Ambiente Nacional nos últimos 90 dias em que o CNPJ é destinatário, transportador ou autorizado. O destinatário que ainda não se manifestou recebe só o resumo. Limite de 18 consultas por hora.",
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"ambiente": {
+										"default": "homologacao",
+										"type": "string",
+										"enum": [
+											"homologacao",
+											"producao"
+										]
+									},
+									"cnpj": {
+										"description": "Filial a consultar; padrão: o titular do certificado.",
+										"type": "string",
+										"pattern": "^[0-9A-Z]{12}\\d{2}$"
+									},
+									"chaveAcesso": {
+										"type": "string",
+										"pattern": "^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$"
+									}
+								},
+								"required": [
+									"chaveAcesso"
+								]
+							},
+							"example": {
+								"ambiente": "homologacao",
+								"chaveAcesso": "35261144555666000181550010000001011876543213"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "A nota.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/NotaRecebida"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "A chave só opera em homologação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "Recusado pelo governo ou barrado pelo cofre antes de transmitir. Com rejeição, o corpo traz a emissão e as mensagens (cStat e xMotivo).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "Notas recebidas: o Ambiente Nacional bloqueou as consultas do CNPJ por uma hora, ou o limite de consultas por chave foi atingido. `erro.mensagem` diz a partir de quando tentar.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"502": {
+						"description": "Sem resposta conclusiva do governo. Repita o pedido com a mesma referência: o cofre consulta antes de reenviar.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/distribuicao/documentos": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Tudo o que o Ambiente Nacional entregou, na ordem de chegada",
+				"description": "Inclui o que não é nota recebida: eventos das notas que o próprio titular emitiu (a manifestação de um cliente, por exemplo) e documentos que o cofre guarda sem interpretar.",
+				"parameters": [
+					{
+						"name": "depois",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"default": 0
+						},
+						"description": "Só o que tem `sequencia` maior que esta. Passe a `ultimaSequencia` da leitura anterior."
+					},
+					{
+						"name": "limite",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"default": 50,
+							"maximum": 200
+						}
+					},
+					{
+						"name": "ambiente",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": [
+								"homologacao",
+								"producao"
+							]
+						}
+					},
+					{
+						"name": "chaveAcesso",
+						"in": "query",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Documentos.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"documentos": {
+											"type": "array",
+											"items": {
+												"$ref": "#/components/schemas/DocumentoDistribuido"
+											}
+										},
+										"ultimaSequencia": {
+											"type": "integer",
+											"description": "Maior sequência desta página; sem itens, repete o `depois` do pedido."
+										},
+										"haMais": {
+											"type": "boolean"
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/distribuicao/documentos/{sequencia}/xml": {
+			"get": {
+				"tags": [
+					"NF-e recebidas"
+				],
+				"summary": "Baixa o XML de um documento distribuído",
+				"parameters": [
+					{
+						"name": "sequencia",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "integer"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "O XML, como o Ambiente Nacional entregou.",
+						"content": {
+							"application/xml": {
+								"schema": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/v1/nfse": {
 			"post": {
 				"tags": [
@@ -3476,6 +4743,50 @@
 									"certificado_do_cliente_invalido": {
 										"status": 422,
 										"quando": "O governo recusou o certificado na conexão."
+									},
+									"distribuicao_nao_configurada": {
+										"status": 409,
+										"quando": "Notas recebidas: o emitente ainda não informou a UF do estabelecimento na tela do cofre."
+									},
+									"xml_indisponivel": {
+										"status": 409,
+										"quando": "Nota recebida de que o cofre só tem o resumo: o XML completo (e o DANFE) só existe depois da manifestação do destinatário."
+									},
+									"manifestacao_ja_registrada": {
+										"status": 409,
+										"quando": "Ciência da operação pedida depois de outra manifestação da mesma nota."
+									},
+									"chave_de_acesso_invalida": {
+										"status": 422,
+										"quando": "Notas recebidas: a chave de acesso não é de uma NF-e (modelo 55) ou o dígito verificador não confere."
+									},
+									"justificativa_obrigatoria": {
+										"status": 422,
+										"quando": "Operação não realizada sem a justificativa de 15 a 255 caracteres."
+									},
+									"limite_de_manifestacoes": {
+										"status": 422,
+										"quando": "A nota já tem duas manifestações conclusivas do mesmo tipo (o máximo, contando a retificação)."
+									},
+									"manifestacao_rejeitada": {
+										"status": 422,
+										"quando": "O Ambiente Nacional rejeitou a manifestação (fora do prazo, nota cancelada...); `mensagens` traz cStat e xMotivo."
+									},
+									"nota_nao_localizada": {
+										"status": 422,
+										"quando": "Consulta por chave: o Ambiente Nacional não tem a nota disponível para o CNPJ (mais de 90 dias, chave de outra empresa ou nota ainda não recebida por ele)."
+									},
+									"consulta_rejeitada": {
+										"status": 422,
+										"quando": "O Ambiente Nacional rejeitou a consulta por chave; `mensagens` traz cStat e xMotivo."
+									},
+									"consumo_indevido": {
+										"status": 429,
+										"quando": "O Ambiente Nacional bloqueou as consultas do CNPJ por uma hora (cStat 656). Nada sai do cofre até o horário em `mensagem`."
+									},
+									"limite_de_consultas": {
+										"status": 429,
+										"quando": "Consulta por chave: o cofre atingiu 18 consultas em uma hora (o Ambiente Nacional bloqueia a partir de 20)."
 									},
 									"sem_resposta_conclusiva": {
 										"status": 502,
@@ -8990,6 +10301,413 @@
 						]
 					}
 				]
+			},
+			"NotaRecebida": {
+				"type": "object",
+				"description": "NF-e que outra empresa emitiu e que interessa ao titular do cofre. Nasce do resumo entregue pelo Ambiente Nacional e ganha o XML completo depois da manifestação do destinatário.",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"ambiente": {
+						"type": "string",
+						"enum": [
+							"homologacao",
+							"producao"
+						]
+					},
+					"cnpj": {
+						"type": "string",
+						"description": "CNPJ do titular (ou da filial) a quem a nota interessa."
+					},
+					"chaveAcesso": {
+						"type": "string"
+					},
+					"sequencia": {
+						"type": "integer",
+						"description": "Cresce a cada mudança da nota (XML que chegou, cancelamento, manifestação). É o cursor de leitura: guarde a maior que já viu e passe em `?depois=`."
+					},
+					"papel": {
+						"type": "string",
+						"enum": [
+							"destinatario",
+							"terceiro"
+						],
+						"description": "`terceiro`: o titular é transportador ou autorizado a baixar o XML, não o destinatário. Só confronte com pedido de compra as notas de papel `destinatario`."
+					},
+					"emitente": {
+						"type": "object",
+						"properties": {
+							"documento": {
+								"type": "string"
+							},
+							"nome": {
+								"type": [
+									"string",
+									"null"
+								]
+							},
+							"ie": {
+								"type": [
+									"string",
+									"null"
+								]
+							}
+						}
+					},
+					"serie": {
+						"type": "integer"
+					},
+					"numero": {
+						"type": "integer"
+					},
+					"emitidaEm": {
+						"type": [
+							"string",
+							"null"
+						]
+					},
+					"autorizadaEm": {
+						"type": [
+							"string",
+							"null"
+						]
+					},
+					"protocolo": {
+						"type": [
+							"string",
+							"null"
+						]
+					},
+					"tipoOperacao": {
+						"type": [
+							"string",
+							"null"
+						],
+						"enum": [
+							"entrada",
+							"saida",
+							null
+						],
+						"description": "Do ponto de vista do emitente da nota."
+					},
+					"valor": {
+						"type": [
+							"number",
+							"null"
+						],
+						"description": "Valor total da nota (vNF)."
+					},
+					"situacao": {
+						"type": [
+							"string",
+							"null"
+						],
+						"enum": [
+							"autorizada",
+							"cancelada",
+							"denegada",
+							null
+						],
+						"description": "Nulo enquanto o cofre só conhece a chave (manifestação feita antes de o resumo chegar)."
+					},
+					"xmlDisponivel": {
+						"type": "boolean",
+						"description": "O cofre já tem o XML completo (nfeProc)? Antes da manifestação só há o resumo."
+					},
+					"manifestacao": {
+						"oneOf": [
+							{
+								"$ref": "#/components/schemas/ManifestacaoRegistrada"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "A última manifestação: é a que vale."
+					},
+					"manifestacoes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ManifestacaoRegistrada"
+						}
+					},
+					"cienciaAutomaticaRecusada": {
+						"type": [
+							"object",
+							"null"
+						],
+						"properties": {
+							"codigo": {
+								"type": "string"
+							},
+							"descricao": {
+								"type": "string"
+							}
+						},
+						"description": "Motivo da recusa quando a ciência automática foi tentada e o Ambiente Nacional não aceitou."
+					},
+					"eventos": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/DocumentoDistribuido"
+						},
+						"description": "Só na consulta de uma nota: os eventos recebidos (cancelamento, carta de correção...)."
+					},
+					"recebidaEm": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"atualizadaEm": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"repetido": {
+						"type": "boolean",
+						"description": "Só na resposta da manifestação: ela já estava registrada e nada novo foi enviado."
+					}
+				},
+				"required": [
+					"id",
+					"ambiente",
+					"cnpj",
+					"chaveAcesso",
+					"sequencia",
+					"papel",
+					"xmlDisponivel",
+					"manifestacoes"
+				]
+			},
+			"ManifestacaoRegistrada": {
+				"type": "object",
+				"properties": {
+					"tipo": {
+						"type": "string",
+						"enum": [
+							"ciencia",
+							"confirmacao",
+							"desconhecimento",
+							"nao_realizada"
+						]
+					},
+					"sequencia": {
+						"type": "integer",
+						"description": "1, ou 2 na retificação de uma manifestação conclusiva."
+					},
+					"protocolo": {
+						"type": [
+							"string",
+							"null"
+						],
+						"description": "Nulo quando o evento já estava no Ambiente Nacional, registrado fora do cofre."
+					},
+					"registradaEm": {
+						"type": "string",
+						"format": "date-time"
+					},
+					"justificativa": {
+						"type": [
+							"string",
+							"null"
+						]
+					},
+					"origem": {
+						"type": "string",
+						"description": "`agendador` na ciência automática; senão, a chave de API (`chave:...`) ou o painel (`admin`)."
+					},
+					"xmlDisponivel": {
+						"type": "boolean"
+					}
+				}
+			},
+			"DocumentoDistribuido": {
+				"type": "object",
+				"description": "Um documento entregue pelo Ambiente Nacional, como chegou.",
+				"properties": {
+					"sequencia": {
+						"type": "integer",
+						"description": "Ordem de chegada no cofre; cursor de leitura de GET /v1/distribuicao/documentos."
+					},
+					"ambiente": {
+						"type": "string",
+						"enum": [
+							"homologacao",
+							"producao"
+						]
+					},
+					"cnpj": {
+						"type": "string"
+					},
+					"nsu": {
+						"type": [
+							"integer",
+							"null"
+						],
+						"description": "NSU do documento no Ambiente Nacional; nulo no que veio da consulta por chave."
+					},
+					"tipo": {
+						"type": "string",
+						"enum": [
+							"resumo_nfe",
+							"nfe",
+							"resumo_evento",
+							"evento",
+							"outro"
+						]
+					},
+					"schema": {
+						"type": "string",
+						"description": "Schema informado pelo Ambiente Nacional, como `resNFe_v1.01.xsd`."
+					},
+					"chaveAcesso": {
+						"type": [
+							"string",
+							"null"
+						]
+					},
+					"evento": {
+						"type": [
+							"object",
+							"null"
+						],
+						"properties": {
+							"codigo": {
+								"type": "string",
+								"description": "tpEvento: 110111 cancelamento, 110110 carta de correção, 2102xx manifestação do destinatário..."
+							},
+							"sequencia": {
+								"type": "integer"
+							},
+							"descricao": {
+								"type": [
+									"string",
+									"null"
+								]
+							},
+							"registradoEm": {
+								"type": [
+									"string",
+									"null"
+								]
+							},
+							"protocolo": {
+								"type": [
+									"string",
+									"null"
+								]
+							},
+							"autor": {
+								"type": [
+									"string",
+									"null"
+								]
+							}
+						}
+					},
+					"recebidoEm": {
+						"type": "string",
+						"format": "date-time"
+					}
+				}
+			},
+			"Distribuicao": {
+				"type": "object",
+				"description": "Estado da consulta das notas recebidas de um CNPJ em um ambiente. O último NSU e a espera entre consultas são controlados só pelo cofre.",
+				"properties": {
+					"cnpj": {
+						"type": "string"
+					},
+					"ambiente": {
+						"type": "string",
+						"enum": [
+							"homologacao",
+							"producao"
+						]
+					},
+					"uf": {
+						"type": "string"
+					},
+					"consultaAutomatica": {
+						"type": "boolean",
+						"description": "O cofre consulta sozinho (ligado pelo emitente na tela do cofre)."
+					},
+					"cienciaAutomatica": {
+						"type": "boolean",
+						"description": "O cofre registra sozinho a ciência da operação das notas novas (ligado pelo emitente)."
+					},
+					"ultimoNsu": {
+						"type": "integer"
+					},
+					"maiorNsu": {
+						"type": "integer"
+					},
+					"ultimaConsulta": {
+						"type": [
+							"string",
+							"null"
+						],
+						"format": "date-time"
+					},
+					"proximaConsulta": {
+						"type": [
+							"string",
+							"null"
+						],
+						"format": "date-time",
+						"description": "Antes deste instante o cofre não consulta: depois de \"nenhum documento\" o Ambiente Nacional exige uma hora de espera. Nulo quando já pode consultar."
+					},
+					"bloqueada": {
+						"type": "boolean",
+						"description": "O Ambiente Nacional bloqueou as consultas do CNPJ (consumo indevido) até `proximaConsulta`."
+					},
+					"mensagem": {
+						"type": [
+							"object",
+							"null"
+						],
+						"properties": {
+							"codigo": {
+								"type": "string"
+							},
+							"descricao": {
+								"type": "string"
+							}
+						},
+						"description": "Última resposta: 138 documentos localizados, 137 nenhum documento, 656 consumo indevido."
+					},
+					"consultasPorChave": {
+						"type": "object",
+						"properties": {
+							"naUltimaHora": {
+								"type": "integer"
+							},
+							"limite": {
+								"type": "integer"
+							}
+						}
+					}
+				}
+			},
+			"Sincronizacao": {
+				"type": "object",
+				"properties": {
+					"consultou": {
+						"type": "boolean",
+						"description": "false: a espera ainda não venceu (ou outra consulta está em andamento) e nada foi enviado ao Ambiente Nacional."
+					},
+					"lotes": {
+						"type": "integer"
+					},
+					"documentos": {
+						"type": "integer"
+					},
+					"notasNovas": {
+						"type": "integer"
+					},
+					"distribuicao": {
+						"$ref": "#/components/schemas/Distribuicao"
+					}
+				}
 			},
 			"InutilizacaoRegistrada": {
 				"type": "object",

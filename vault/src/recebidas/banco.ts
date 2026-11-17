@@ -1,0 +1,340 @@
+// NF-e recebidas e o estado da distribuição de DF-e no D1 do cofre.
+
+import type { Ambiente } from "../fiscal/dados";
+import type { SituacaoRecebida } from "../nfe/distribuicao";
+import type { Manifestacao } from "../nfe/eventos";
+
+type Row = Record<string, unknown>;
+
+// ---------- Cursor da distribuição (um por CNPJ e ambiente) ----------
+
+export interface Cursor {
+	docId: string;
+	environment: Ambiente;
+	/** Sigla da UF do interessado. */
+	uf: string;
+	/** O agendador consulta sozinho? */
+	auto: boolean;
+	/** O agendador registra a ciência da operação das notas novas? */
+	autoCiencia: boolean;
+	ultNsu: number;
+	maxNsu: number;
+	/** Nenhuma consulta por sequência sai antes deste instante. */
+	nextAt: number;
+	lastAt: number | null;
+	lastCode: string | null;
+	lastMessage: string | null;
+	/** Instantes das consultas pontuais (por chave) ainda dentro da última hora. */
+	pontuais: number[];
+}
+
+const toCursor = (r: Row): Cursor => ({
+	docId: r.doc_id as string,
+	environment: r.environment as Ambiente,
+	uf: r.uf as string,
+	auto: r.auto === 1,
+	autoCiencia: r.auto_ciencia === 1,
+	ultNsu: r.ult_nsu as number,
+	maxNsu: r.max_nsu as number,
+	nextAt: r.next_at as number,
+	lastAt: (r.last_at as number | null) ?? null,
+	lastCode: (r.last_code as string | null) ?? null,
+	lastMessage: (r.last_message as string | null) ?? null,
+	pontuais: JSON.parse((r.pontuais as string | null) ?? "[]") as number[],
+});
+
+export async function getCursor(db: D1Database, docId: string, environment: Ambiente): Promise<Cursor | null> {
+	const row = await db.prepare("SELECT * FROM dfe_cursores WHERE doc_id = ? AND environment = ?").bind(docId, environment).first<Row>();
+	return row ? toCursor(row) : null;
+}
+
+export async function listCursores(db: D1Database): Promise<Cursor[]> {
+	const { results } = await db.prepare("SELECT * FROM dfe_cursores ORDER BY environment DESC, doc_id").all<Row>();
+	return results.map(toCursor);
+}
+
+/** Cria ou altera a configuração; o NSU e a espera não mudam. */
+export async function configurarCursor(
+	db: D1Database,
+	k: { docId: string; environment: Ambiente },
+	config: { uf: string; auto: boolean; autoCiencia: boolean },
+): Promise<Cursor> {
+	await db
+		.prepare(
+			`INSERT INTO dfe_cursores (doc_id, environment, uf, auto, auto_ciencia) VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT (doc_id, environment) DO UPDATE SET uf = excluded.uf, auto = excluded.auto, auto_ciencia = excluded.auto_ciencia`,
+		)
+		.bind(k.docId, k.environment, config.uf, config.auto ? 1 : 0, config.autoCiencia ? 1 : 0)
+		.run();
+	return (await getCursor(db, k.docId, k.environment)) as Cursor;
+}
+
+/**
+ * Reserva a vez de consultar: só passa quem encontra a espera vencida, e a
+ * reserva empurra a próxima consulta para `ate`. Assim duas execuções (o
+ * agendador e um pedido manual) nunca consultam o mesmo NSU ao mesmo tempo.
+ */
+export async function reservarConsulta(db: D1Database, c: Cursor, agora: number, ate: number): Promise<boolean> {
+	const res = await db
+		.prepare("UPDATE dfe_cursores SET next_at = ? WHERE doc_id = ? AND environment = ? AND next_at <= ?")
+		.bind(ate, c.docId, c.environment, agora)
+		.run();
+	return res.meta.changes > 0;
+}
+
+export async function atualizarCursor(
+	db: D1Database,
+	c: Cursor,
+	patch: Partial<Pick<Cursor, "ultNsu" | "maxNsu" | "nextAt" | "lastAt" | "lastCode" | "lastMessage" | "pontuais">>,
+): Promise<Cursor> {
+	const n = { ...c, ...patch };
+	await db
+		.prepare(
+			`UPDATE dfe_cursores SET ult_nsu = ?, max_nsu = ?, next_at = ?, last_at = ?, last_code = ?, last_message = ?, pontuais = ?
+			 WHERE doc_id = ? AND environment = ?`,
+		)
+		.bind(n.ultNsu, n.maxNsu, n.nextAt, n.lastAt, n.lastCode, n.lastMessage, JSON.stringify(n.pontuais), c.docId, c.environment)
+		.run();
+	return n;
+}
+
+// ---------- Documentos distribuídos (registro bruto, por ordem de chegada) ----------
+
+export type TipoDocumento = "resumo_nfe" | "nfe" | "resumo_evento" | "evento" | "outro";
+
+export interface DocumentoDfe {
+	seq: number;
+	docId: string;
+	environment: Ambiente;
+	nsu: number | null;
+	schema: string;
+	kind: TipoDocumento;
+	accessKey: string | null;
+	eventType: string | null;
+	eventSeq: number | null;
+	detail: { descricao?: string | null; em?: string | null; protocolo?: string | null; autor?: string | null };
+	documentKey: string;
+	receivedAt: number;
+}
+
+const toDocumento = (r: Row): DocumentoDfe => ({
+	seq: r.seq as number,
+	docId: r.doc_id as string,
+	environment: r.environment as Ambiente,
+	nsu: (r.nsu as number | null) ?? null,
+	schema: r.schema as string,
+	kind: r.kind as TipoDocumento,
+	accessKey: (r.access_key as string | null) ?? null,
+	eventType: (r.event_type as string | null) ?? null,
+	eventSeq: (r.event_seq as number | null) ?? null,
+	detail: JSON.parse((r.detail as string | null) ?? "{}") as DocumentoDfe["detail"],
+	documentKey: r.document_key as string,
+	receivedAt: r.received_at as number,
+});
+
+/**
+ * Registra o documento. Devolve false quando ele já estava registrado: pelo
+ * NSU ou, sem NSU (consulta por chave), pelo arquivo.
+ */
+export async function inserirDocumento(db: D1Database, d: Omit<DocumentoDfe, "seq">): Promise<boolean> {
+	if (d.nsu === null) {
+		const igual = await db.prepare("SELECT 1 AS ok FROM dfe_documentos WHERE document_key = ? AND environment = ?").bind(d.documentKey, d.environment).first();
+		if (igual) return false;
+	}
+	const res = await db
+		.prepare(
+			`INSERT OR IGNORE INTO dfe_documentos (doc_id, environment, nsu, schema, kind, access_key, event_type, event_seq, detail, document_key, received_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.bind(d.docId, d.environment, d.nsu, d.schema, d.kind, d.accessKey, d.eventType, d.eventSeq, JSON.stringify(d.detail), d.documentKey, d.receivedAt)
+		.run();
+	return res.meta.changes > 0;
+}
+
+export async function listDocumentos(
+	db: D1Database,
+	filtro: { depois?: number; limite?: number; environment?: Ambiente; accessKey?: string; eventos?: boolean } = {},
+): Promise<DocumentoDfe[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM dfe_documentos WHERE seq > ?1 AND (?2 IS NULL OR environment = ?2) AND (?3 IS NULL OR access_key = ?3)
+			 AND (?4 = 0 OR kind IN ('evento', 'resumo_evento'))
+			 ORDER BY seq LIMIT ?5`,
+		)
+		.bind(filtro.depois ?? 0, filtro.environment ?? null, filtro.accessKey ?? null, filtro.eventos ? 1 : 0, Math.min(Math.max(filtro.limite ?? 50, 1), 200))
+		.all<Row>();
+	return results.map(toDocumento);
+}
+
+export async function getDocumento(db: D1Database, seq: number): Promise<DocumentoDfe | null> {
+	const row = await db.prepare("SELECT * FROM dfe_documentos WHERE seq = ?").bind(seq).first<Row>();
+	return row ? toDocumento(row) : null;
+}
+
+// ---------- NF-e recebidas ----------
+
+export interface ManifestacaoRegistrada {
+	tipo: Manifestacao;
+	sequencia: number;
+	/** Null quando o evento já estava no Ambiente Nacional (registrado fora do cofre). */
+	protocolo: string | null;
+	em: string;
+	justificativa: string | null;
+	documentKey: string | null;
+	/** `agendador` na ciência automática; senão, quem pediu. */
+	origem: string;
+}
+
+export interface Recebida {
+	id: string;
+	/** CNPJ do titular (ou da filial) a quem a nota interessa. */
+	docId: string;
+	environment: Ambiente;
+	accessKey: string;
+	/** Cresce a cada mudança da nota. */
+	seq: number;
+	role: "destinatario" | "terceiro";
+	emitDoc: string | null;
+	emitName: string | null;
+	emitIe: string | null;
+	issuedAt: string | null;
+	operation: "entrada" | "saida" | null;
+	value: number | null;
+	situation: SituacaoRecebida | null;
+	protocol: string | null;
+	authorizedAt: string | null;
+	summaryKey: string | null;
+	xmlKey: string | null;
+	extra: { manifestacoes?: ManifestacaoRegistrada[]; cienciaAutomatica?: { codigo: string; descricao: string } };
+	createdAt: number;
+	updatedAt: number;
+}
+
+const toRecebida = (r: Row): Recebida => ({
+	id: r.id as string,
+	docId: r.doc_id as string,
+	environment: r.environment as Ambiente,
+	accessKey: r.access_key as string,
+	seq: r.seq as number,
+	role: r.role as Recebida["role"],
+	emitDoc: (r.emit_doc as string | null) ?? null,
+	emitName: (r.emit_name as string | null) ?? null,
+	emitIe: (r.emit_ie as string | null) ?? null,
+	issuedAt: (r.issued_at as string | null) ?? null,
+	operation: (r.operation as Recebida["operation"]) ?? null,
+	value: (r.value as number | null) ?? null,
+	situation: (r.situation as SituacaoRecebida | null) ?? null,
+	protocol: (r.protocol as string | null) ?? null,
+	authorizedAt: (r.authorized_at as string | null) ?? null,
+	summaryKey: (r.summary_key as string | null) ?? null,
+	xmlKey: (r.xml_key as string | null) ?? null,
+	extra: JSON.parse((r.extra as string | null) ?? "{}") as Recebida["extra"],
+	createdAt: r.created_at as number,
+	updatedAt: r.updated_at as number,
+});
+
+const PROXIMA_SEQ = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM recebidas)";
+
+export async function getRecebida(db: D1Database, id: string): Promise<Recebida | null> {
+	const row = await db.prepare("SELECT * FROM recebidas WHERE id = ?").bind(id).first<Row>();
+	return row ? toRecebida(row) : null;
+}
+
+export async function findRecebida(db: D1Database, environment: Ambiente, accessKey: string): Promise<Recebida | null> {
+	const row = await db.prepare("SELECT * FROM recebidas WHERE environment = ? AND access_key = ?").bind(environment, accessKey).first<Row>();
+	return row ? toRecebida(row) : null;
+}
+
+export type DadosDaRecebida = Partial<
+	Pick<Recebida, "role" | "emitDoc" | "emitName" | "emitIe" | "issuedAt" | "operation" | "value" | "situation" | "protocol" | "authorizedAt" | "summaryKey" | "xmlKey" | "extra">
+>;
+
+const novoId = () => `rcb_${[...crypto.getRandomValues(new Uint8Array(10))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+
+/**
+ * Cria a nota recebida ou junta os dados novos aos que já existem, e avança a
+ * sequência de leitura. Dado ausente não apaga o que já se sabia, e a nota
+ * cancelada ou denegada não volta a "autorizada" (o XML completo traz sempre o
+ * protocolo de autorização, mesmo de nota cancelada depois).
+ */
+export async function salvarRecebida(
+	db: D1Database,
+	k: { docId: string; environment: Ambiente; accessKey: string },
+	dados: DadosDaRecebida,
+	agora = Date.now(),
+): Promise<{ recebida: Recebida; nova: boolean }> {
+	const atual = await findRecebida(db, k.environment, k.accessKey);
+	const base: Recebida = atual ?? {
+		id: novoId(), ...k, seq: 0, role: "destinatario", emitDoc: null, emitName: null, emitIe: null, issuedAt: null, operation: null,
+		value: null, situation: null, protocol: null, authorizedAt: null, summaryKey: null, xmlKey: null, extra: {}, createdAt: agora, updatedAt: agora,
+	};
+	const n: Recebida = { ...base, updatedAt: agora };
+	for (const [campo, valor] of Object.entries(dados) as [keyof DadosDaRecebida, unknown][]) {
+		if (valor === null || valor === undefined) continue;
+		if (campo === "situation" && base.situation && base.situation !== "autorizada") continue;
+		(n as unknown as Record<string, unknown>)[campo] = valor;
+	}
+	if (atual) {
+		await db
+			.prepare(
+				`UPDATE recebidas SET seq = ${PROXIMA_SEQ}, role = ?, emit_doc = ?, emit_name = ?, emit_ie = ?, issued_at = ?, operation = ?, value = ?,
+				 situation = ?, protocol = ?, authorized_at = ?, summary_key = ?, xml_key = ?, extra = ?, updated_at = ? WHERE id = ?`,
+			)
+			.bind(n.role, n.emitDoc, n.emitName, n.emitIe, n.issuedAt, n.operation, n.value, n.situation, n.protocol, n.authorizedAt, n.summaryKey, n.xmlKey, JSON.stringify(n.extra), n.updatedAt, n.id)
+			.run();
+	} else {
+		await db
+			.prepare(
+				`INSERT INTO recebidas (id, doc_id, environment, access_key, seq, role, emit_doc, emit_name, emit_ie, issued_at, operation, value,
+				 situation, protocol, authorized_at, summary_key, xml_key, extra, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ${PROXIMA_SEQ}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.bind(n.id, n.docId, n.environment, n.accessKey, n.role, n.emitDoc, n.emitName, n.emitIe, n.issuedAt, n.operation, n.value, n.situation, n.protocol, n.authorizedAt, n.summaryKey, n.xmlKey, JSON.stringify(n.extra), n.createdAt, n.updatedAt)
+			.run();
+	}
+	return { recebida: (await getRecebida(db, n.id)) as Recebida, nova: !atual };
+}
+
+/**
+ * Notas na ordem da sequência de leitura (`depois` = última sequência que o
+ * cliente já viu). Com `recentes`, as mais novas primeiro, para o painel.
+ */
+export async function listRecebidas(
+	db: D1Database,
+	filtro: { depois?: number; limite?: number; environment?: Ambiente; accessKey?: string; recentes?: boolean } = {},
+): Promise<Recebida[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM recebidas WHERE seq > ?1 AND (?2 IS NULL OR environment = ?2) AND (?3 IS NULL OR access_key = ?3)
+			 ORDER BY seq ${filtro.recentes ? "DESC" : "ASC"} LIMIT ?4`,
+		)
+		.bind(filtro.depois ?? 0, filtro.environment ?? null, filtro.accessKey ?? null, Math.min(Math.max(filtro.limite ?? 50, 1), 200))
+		.all<Row>();
+	return results.map(toRecebida);
+}
+
+/**
+ * Notas em que o titular é o destinatário, autorizadas a partir do dia `desde`
+ * (AAAA-MM-DD), das quais o cofre só tem o resumo e ainda não há manifestação
+ * nem tentativa de ciência automática.
+ */
+export async function listSemCiencia(db: D1Database, c: Cursor, desde: string, limite: number): Promise<Recebida[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM recebidas WHERE doc_id = ? AND environment = ? AND role = 'destinatario' AND situation = 'autorizada'
+			 AND xml_key IS NULL AND summary_key IS NOT NULL AND substr(authorized_at, 1, 10) >= ?
+			 AND json_extract(extra, '$.manifestacoes') IS NULL AND json_extract(extra, '$.cienciaAutomatica') IS NULL
+			 ORDER BY seq LIMIT ?`,
+		)
+		.bind(c.docId, c.environment, desde, limite)
+		.all<Row>();
+	return results.map(toRecebida);
+}
+
+/** Quantas notas recebidas há em cada ambiente e quantas ainda estão só com o resumo. */
+export async function contarRecebidas(db: D1Database): Promise<{ environment: Ambiente; total: number; semXml: number }[]> {
+	const { results } = await db
+		.prepare("SELECT environment, COUNT(*) AS total, SUM(CASE WHEN xml_key IS NULL THEN 1 ELSE 0 END) AS sem_xml FROM recebidas GROUP BY environment")
+		.all<Row>();
+	return results.map((r) => ({ environment: r.environment as Ambiente, total: r.total as number, semXml: (r.sem_xml as number | null) ?? 0 }));
+}

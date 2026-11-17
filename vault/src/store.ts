@@ -224,16 +224,17 @@ export async function deleteDocument(db: D1Database, bucket: R2Bucket, key: stri
 
 export async function listDocuments(
 	db: D1Database,
-	opts: { prefix?: string; limit?: number; before?: number },
+	opts: { prefix?: string; limit?: number; before?: number; emitidos?: boolean },
 ): Promise<DocumentEntry[]> {
 	const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
 	const { results } = await db
 		.prepare(
 			`SELECT key, content_type, size, sha256, meta, created_at FROM documents
 			 WHERE key LIKE ? ESCAPE '\\' AND created_at < ?
+			 AND (? = 0 OR key LIKE 'nfse/%' OR key LIKE 'nfe/%' OR key LIKE 'nfce/%')
 			 ORDER BY created_at DESC LIMIT ?`,
 		)
-		.bind(`${(opts.prefix ?? "").replace(/[\\%_]/g, "\\$&")}%`, opts.before ?? Number.MAX_SAFE_INTEGER, limit)
+		.bind(`${(opts.prefix ?? "").replace(/[\\%_]/g, "\\$&")}%`, opts.before ?? Number.MAX_SAFE_INTEGER, opts.emitidos ? 1 : 0, limit)
 		.all<{
 			key: string;
 			content_type: string;
@@ -282,7 +283,8 @@ export interface Nota {
  * dos próprios arquivos: se há evento de cancelamento arquivado, está cancelada.
  */
 export async function listNotas(db: D1Database, limit = 100): Promise<Nota[]> {
-	const docs = (await listDocuments(db, { limit: 200 })).filter((d) => /^(nfse|nfe|nfce)\//.test(d.key));
+	// Só os documentos emitidos: as notas recebidas de terceiros têm lista própria.
+	const docs = (await listDocuments(db, { limit: 200, emitidos: true })).filter((d) => /^(nfse|nfe|nfce)\//.test(d.key));
 	const notas = new Map<string, Nota>();
 	// Do mais antigo para o mais novo, para a nota nascer antes dos seus eventos.
 	for (const doc of [...docs].reverse()) {
