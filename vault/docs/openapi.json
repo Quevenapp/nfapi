@@ -2,7 +2,7 @@
 	"openapi": "3.1.0",
 	"info": {
 		"title": "Cofre NFapi",
-		"version": "0.5.0",
+		"version": "0.6.0",
 		"description": "API de emissão de notas fiscais do cofre NFapi, que roda na conta Cloudflare do emitente. Todas as chamadas levam uma chave de API criada na tela /setup do cofre. O cofre não calcula imposto: o sistema que chama informa bases, alíquotas e valores; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva. Erros vêm sempre como `{ \"erro\": { \"codigo\", \"mensagem\" } }`.",
 		"license": {
 			"name": "MIT"
@@ -4135,6 +4135,7 @@
 													]
 												},
 												"ibsCbs": {
+													"description": "IBS e CBS do item, como calculados pelo sistema emissor. Sem baseCalculo, vão só o CST e a classificação. Não há suporte ao regime monofásico (combustíveis), à transferência de crédito, ao ajuste de competência nem ao crédito presumido da Zona Franca de Manaus.",
 													"type": "object",
 													"properties": {
 														"cst": {
@@ -4144,6 +4145,9 @@
 														"classificacao": {
 															"type": "string",
 															"pattern": "^\\d{6}$"
+														},
+														"doacao": {
+															"type": "boolean"
 														},
 														"baseCalculo": {
 															"type": "number",
@@ -4162,6 +4166,62 @@
 																	"type": "number",
 																	"minimum": 0,
 																	"maximum": 9999999999999.99
+																},
+																"diferimento": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"valor"
+																	]
+																},
+																"devolucao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"valor"
+																	]
+																},
+																"reducao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"aliquotaEfetiva"
+																	]
 																}
 															},
 															"required": [
@@ -4181,6 +4241,62 @@
 																	"type": "number",
 																	"minimum": 0,
 																	"maximum": 9999999999999.99
+																},
+																"diferimento": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"valor"
+																	]
+																},
+																"devolucao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"valor"
+																	]
+																},
+																"reducao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"aliquotaEfetiva"
+																	]
 																}
 															},
 															"required": [
@@ -4200,12 +4316,388 @@
 																	"type": "number",
 																	"minimum": 0,
 																	"maximum": 9999999999999.99
+																},
+																"diferimento": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"valor"
+																	]
+																},
+																"devolucao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"valor"
+																	]
+																},
+																"reducao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"aliquotaEfetiva"
+																	]
 																}
 															},
 															"required": [
 																"aliquota",
 																"valor"
 															]
+														},
+														"tributacaoRegular": {
+															"type": "object",
+															"properties": {
+																"cst": {
+																	"type": "string",
+																	"pattern": "^\\d{3}$"
+																},
+																"classificacao": {
+																	"type": "string",
+																	"pattern": "^\\d{6}$"
+																},
+																"ibsUf": {
+																	"type": "object",
+																	"properties": {
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquotaEfetiva",
+																		"valor"
+																	]
+																},
+																"ibsMunicipio": {
+																	"type": "object",
+																	"properties": {
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquotaEfetiva",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquotaEfetiva",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"cst",
+																"classificacao",
+																"ibsUf",
+																"ibsMunicipio",
+																"cbs"
+															]
+														},
+														"compraGovernamental": {
+															"type": "object",
+															"properties": {
+																"ibsUf": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"ibsMunicipio": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"ibsUf",
+																"ibsMunicipio",
+																"cbs"
+															]
+														},
+														"simplesNacional": {
+															"type": "object",
+															"properties": {
+																"ibs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"cbs"
+															]
+														},
+														"estornoCredito": {
+															"type": "object",
+															"properties": {
+																"ibs": {
+																	"type": "number",
+																	"minimum": 0,
+																	"maximum": 9999999999999.99
+																},
+																"cbs": {
+																	"type": "number",
+																	"minimum": 0,
+																	"maximum": 9999999999999.99
+																}
+															},
+															"required": [
+																"ibs",
+																"cbs"
+															]
+														},
+														"creditoPresumido": {
+															"type": "object",
+															"properties": {
+																"baseCalculo": {
+																	"type": "number",
+																	"minimum": 0,
+																	"maximum": 9999999999999.99
+																},
+																"codigo": {
+																	"type": "string",
+																	"pattern": "^\\d{2}$"
+																},
+																"ibs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		},
+																		"condicaoSuspensiva": {
+																			"default": false,
+																			"type": "boolean"
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		},
+																		"condicaoSuspensiva": {
+																			"default": false,
+																			"type": "boolean"
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"baseCalculo",
+																"codigo"
+															]
+														}
+													},
+													"required": [
+														"cst",
+														"classificacao"
+													]
+												},
+												"impostoSeletivo": {
+													"type": "object",
+													"properties": {
+														"cst": {
+															"type": "string",
+															"pattern": "^\\d{3}$"
+														},
+														"classificacao": {
+															"type": "string",
+															"pattern": "^\\d{6}$"
+														},
+														"baseCalculo": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"aliquota": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 999.9999
+														},
+														"aliquotaEspecifica": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 999.9999
+														},
+														"unidade": {
+															"type": "string",
+															"minLength": 1,
+															"maxLength": 6
+														},
+														"quantidade": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 99999999999.9999
+														},
+														"valor": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
 														}
 													},
 													"required": [
@@ -5845,6 +6337,7 @@
 													]
 												},
 												"ibsCbs": {
+													"description": "IBS e CBS do item, como calculados pelo sistema emissor. Sem baseCalculo, vão só o CST e a classificação. Não há suporte ao regime monofásico (combustíveis), à transferência de crédito, ao ajuste de competência nem ao crédito presumido da Zona Franca de Manaus.",
 													"type": "object",
 													"properties": {
 														"cst": {
@@ -5854,6 +6347,9 @@
 														"classificacao": {
 															"type": "string",
 															"pattern": "^\\d{6}$"
+														},
+														"doacao": {
+															"type": "boolean"
 														},
 														"baseCalculo": {
 															"type": "number",
@@ -5872,6 +6368,62 @@
 																	"type": "number",
 																	"minimum": 0,
 																	"maximum": 9999999999999.99
+																},
+																"diferimento": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"valor"
+																	]
+																},
+																"devolucao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"valor"
+																	]
+																},
+																"reducao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"aliquotaEfetiva"
+																	]
 																}
 															},
 															"required": [
@@ -5891,6 +6443,62 @@
 																	"type": "number",
 																	"minimum": 0,
 																	"maximum": 9999999999999.99
+																},
+																"diferimento": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"valor"
+																	]
+																},
+																"devolucao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"valor"
+																	]
+																},
+																"reducao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"aliquotaEfetiva"
+																	]
 																}
 															},
 															"required": [
@@ -5910,12 +6518,388 @@
 																	"type": "number",
 																	"minimum": 0,
 																	"maximum": 9999999999999.99
+																},
+																"diferimento": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"valor"
+																	]
+																},
+																"devolucao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"valor"
+																	]
+																},
+																"reducao": {
+																	"type": "object",
+																	"properties": {
+																		"percentual": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		}
+																	},
+																	"required": [
+																		"percentual",
+																		"aliquotaEfetiva"
+																	]
 																}
 															},
 															"required": [
 																"aliquota",
 																"valor"
 															]
+														},
+														"tributacaoRegular": {
+															"type": "object",
+															"properties": {
+																"cst": {
+																	"type": "string",
+																	"pattern": "^\\d{3}$"
+																},
+																"classificacao": {
+																	"type": "string",
+																	"pattern": "^\\d{6}$"
+																},
+																"ibsUf": {
+																	"type": "object",
+																	"properties": {
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquotaEfetiva",
+																		"valor"
+																	]
+																},
+																"ibsMunicipio": {
+																	"type": "object",
+																	"properties": {
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquotaEfetiva",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquotaEfetiva": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquotaEfetiva",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"cst",
+																"classificacao",
+																"ibsUf",
+																"ibsMunicipio",
+																"cbs"
+															]
+														},
+														"compraGovernamental": {
+															"type": "object",
+															"properties": {
+																"ibsUf": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"ibsMunicipio": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"ibsUf",
+																"ibsMunicipio",
+																"cbs"
+															]
+														},
+														"simplesNacional": {
+															"type": "object",
+															"properties": {
+																"ibs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"cbs"
+															]
+														},
+														"estornoCredito": {
+															"type": "object",
+															"properties": {
+																"ibs": {
+																	"type": "number",
+																	"minimum": 0,
+																	"maximum": 9999999999999.99
+																},
+																"cbs": {
+																	"type": "number",
+																	"minimum": 0,
+																	"maximum": 9999999999999.99
+																}
+															},
+															"required": [
+																"ibs",
+																"cbs"
+															]
+														},
+														"creditoPresumido": {
+															"type": "object",
+															"properties": {
+																"baseCalculo": {
+																	"type": "number",
+																	"minimum": 0,
+																	"maximum": 9999999999999.99
+																},
+																"codigo": {
+																	"type": "string",
+																	"pattern": "^\\d{2}$"
+																},
+																"ibs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		},
+																		"condicaoSuspensiva": {
+																			"default": false,
+																			"type": "boolean"
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																},
+																"cbs": {
+																	"type": "object",
+																	"properties": {
+																		"aliquota": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 999.9999
+																		},
+																		"valor": {
+																			"type": "number",
+																			"minimum": 0,
+																			"maximum": 9999999999999.99
+																		},
+																		"condicaoSuspensiva": {
+																			"default": false,
+																			"type": "boolean"
+																		}
+																	},
+																	"required": [
+																		"aliquota",
+																		"valor"
+																	]
+																}
+															},
+															"required": [
+																"baseCalculo",
+																"codigo"
+															]
+														}
+													},
+													"required": [
+														"cst",
+														"classificacao"
+													]
+												},
+												"impostoSeletivo": {
+													"type": "object",
+													"properties": {
+														"cst": {
+															"type": "string",
+															"pattern": "^\\d{3}$"
+														},
+														"classificacao": {
+															"type": "string",
+															"pattern": "^\\d{6}$"
+														},
+														"baseCalculo": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"aliquota": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 999.9999
+														},
+														"aliquotaEspecifica": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 999.9999
+														},
+														"unidade": {
+															"type": "string",
+															"minLength": 1,
+															"maxLength": 6
+														},
+														"quantidade": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 99999999999.9999
+														},
+														"valor": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
 														}
 													},
 													"required": [

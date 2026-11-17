@@ -80,7 +80,10 @@ interface Totais {
 	temDifal: boolean; temTotTrib: boolean;
 	/** IBS e CBS: há o grupo em algum item, e há valores calculados? */
 	temIbsCbs: boolean; temValoresIbsCbs: boolean;
-	vBCIBSCBS: number; vIBSUF: number; vIBSMun: number; vCBS: number;
+	/** Há Imposto Seletivo, estorno de crédito ou IBS/CBS do Simples em algum item? */
+	temIs: boolean; temEstorno: boolean; temSimples: boolean;
+	/** Totais da reforma tributária, por nome de campo (vBC, vIBSUF, vDifCBS, vCredPresIBS, vIS...). */
+	rtc: Record<string, number>;
 }
 
 function grupoIcms(i: Icms, t: Totais): string {
@@ -291,34 +294,114 @@ function detalhe(item: Item, numero: number, t: Totais, descricao: string): stri
 			)
 		: "";
 
+	/** Acumula um total da reforma tributária (IBS, CBS e Imposto Seletivo), em centavos. */
+	const soma = (chave: string, v: number | undefined) => {
+		t.rtc[chave] = (t.rtc[chave] ?? 0) + cent(v);
+	};
+
+	const is = imp.impostoSeletivo;
+	let seletivo = "";
+	if (is) {
+		t.temIs = true;
+		soma("vIS", is.valor);
+		seletivo = grupo(
+			"IS",
+			tag("CSTIS", is.cst) + tag("cClassTribIS", is.classificacao) +
+				(is.baseCalculo !== undefined
+					? tag("vBCIS", d2(is.baseCalculo)) + tag("pIS", pc(is.aliquota ?? 0)) + tag("adRemIS", pc(is.aliquotaEspecifica)) +
+						// No Imposto Seletivo a quantidade tributável vai sempre com quatro casas decimais.
+						(is.unidade && is.quantidade !== undefined ? tag("uTrib", is.unidade) + tag("qTrib", is.quantidade.toFixed(4)) : "") +
+						tag("vIS", d2(is.valor ?? 0))
+					: ""),
+		);
+	}
+
 	const ib = imp.ibsCbs;
 	let ibsCbs = "";
 	if (ib) {
 		t.temIbsCbs = true;
+		/** gIBSUF, gIBSMun ou gCBS: a alíquota, os ajustes (diferimento, devolução, redução) e o valor. */
+		const tributo = (nome: "IBSUF" | "IBSMun" | "CBS", x: typeof ib.cbs) => {
+			soma(`v${nome}`, x?.valor);
+			soma(`vDif${nome}`, x?.diferimento?.valor);
+			soma(`vDevTrib${nome}`, x?.devolucao?.valor);
+			return grupo(
+				`g${nome}`,
+				tag(`p${nome}`, pc(x?.aliquota ?? 0)) +
+					(x?.diferimento ? grupo("gDif", tag("pDif", pc(x.diferimento.percentual)) + tag("vDif", d2(x.diferimento.valor))) : "") +
+					(x?.devolucao ? grupo("gDevTrib", tag("pDevTrib", pc(x.devolucao.percentual)) + tag("vDevTrib", d2(x.devolucao.valor))) : "") +
+					(x?.reducao ? grupo("gRed", tag("pRedAliq", pc(x.reducao.percentual)) + tag("pAliqEfet", pc(x.reducao.aliquotaEfetiva))) : "") +
+					tag(`v${nome}`, d2(x?.valor ?? 0)),
+			);
+		};
 		let valores = "";
 		if (ib.baseCalculo !== undefined) {
 			t.temValoresIbsCbs = true;
-			t.vBCIBSCBS += cent(ib.baseCalculo);
-			t.vIBSUF += cent(ib.ibsUf?.valor);
-			t.vIBSMun += cent(ib.ibsMunicipio?.valor);
-			t.vCBS += cent(ib.cbs?.valor);
+			soma("vBC", ib.baseCalculo);
+			const reg = ib.tributacaoRegular;
+			const gov = ib.compraGovernamental;
 			valores = grupo(
 				"gIBSCBS",
-				tag("vBC", d2(ib.baseCalculo)) +
-					grupo("gIBSUF", tag("pIBSUF", pc(ib.ibsUf?.aliquota ?? 0)) + tag("vIBSUF", d2(ib.ibsUf?.valor ?? 0))) +
-					grupo("gIBSMun", tag("pIBSMun", pc(ib.ibsMunicipio?.aliquota ?? 0)) + tag("vIBSMun", d2(ib.ibsMunicipio?.valor ?? 0))) +
-					tag("vIBS", ((cent(ib.ibsUf?.valor) + cent(ib.ibsMunicipio?.valor)) / 100).toFixed(2)) +
-					grupo("gCBS", tag("pCBS", pc(ib.cbs?.aliquota ?? 0)) + tag("vCBS", d2(ib.cbs?.valor ?? 0))),
+				tag("vBC", d2(ib.baseCalculo)) + tributo("IBSUF", ib.ibsUf) + tributo("IBSMun", ib.ibsMunicipio) +
+					tag("vIBS", ((cent(ib.ibsUf?.valor) + cent(ib.ibsMunicipio?.valor)) / 100).toFixed(2)) + tributo("CBS", ib.cbs) +
+					(reg
+						? grupo(
+								"gTribRegular",
+								tag("CSTReg", reg.cst) + tag("cClassTribReg", reg.classificacao) +
+									tag("pAliqEfetRegIBSUF", pc(reg.ibsUf.aliquotaEfetiva)) + tag("vTribRegIBSUF", d2(reg.ibsUf.valor)) +
+									tag("pAliqEfetRegIBSMun", pc(reg.ibsMunicipio.aliquotaEfetiva)) + tag("vTribRegIBSMun", d2(reg.ibsMunicipio.valor)) +
+									tag("pAliqEfetRegCBS", pc(reg.cbs.aliquotaEfetiva)) + tag("vTribRegCBS", d2(reg.cbs.valor)),
+							)
+						: "") +
+					(gov
+						? grupo(
+								"gTribCompraGov",
+								tag("pAliqIBSUF", pc(gov.ibsUf.aliquota)) + tag("vTribIBSUF", d2(gov.ibsUf.valor)) +
+									tag("pAliqIBSMun", pc(gov.ibsMunicipio.aliquota)) + tag("vTribIBSMun", d2(gov.ibsMunicipio.valor)) +
+									tag("pAliqCBS", pc(gov.cbs.aliquota)) + tag("vTribCBS", d2(gov.cbs.valor)),
+							)
+						: ""),
 			);
 		}
-		ibsCbs = grupo("IBSCBS", tag("CST", ib.cst) + tag("cClassTrib", ib.classificacao) + valores);
+		const sn = ib.simplesNacional;
+		if (sn) {
+			t.temSimples = true;
+			soma("vIBSSN", sn.ibs?.valor);
+			soma("vCBSSN", sn.cbs.valor);
+		}
+		const estorno = ib.estornoCredito;
+		if (estorno) {
+			t.temEstorno = true;
+			soma("vIBSEstCred", estorno.ibs);
+			soma("vCBSEstCred", estorno.cbs);
+		}
+		const cp = ib.creditoPresumido;
+		const credito = (nome: "IBS" | "CBS", c: NonNullable<typeof cp>["ibs"]) => {
+			if (!c) return "";
+			soma(`vCredPres${c.condicaoSuspensiva ? "CondSus" : ""}${nome}`, c.valor);
+			return grupo(`g${nome}CredPres`, tag("pCredPres", pc(c.aliquota)) + tag(c.condicaoSuspensiva ? "vCredPresCondSus" : "vCredPres", d2(c.valor)));
+		};
+		if (cp) t.temValoresIbsCbs = true;
+		ibsCbs = grupo(
+			"IBSCBS",
+			tag("CST", ib.cst) + tag("cClassTrib", ib.classificacao) + tag("indDoacao", ib.doacao ? "1" : undefined) + valores +
+				(sn
+					? grupo(
+							"gTribSN",
+							(sn.ibs ? grupo("gIBSSN", tag("pIBSSN", pc(sn.ibs.aliquota)) + tag("vIBSSN", d2(sn.ibs.valor))) : "") +
+								grupo("gCBSSN", tag("pCBSSN", pc(sn.cbs.aliquota)) + tag("vCBSSN", d2(sn.cbs.valor))),
+						)
+					: "") +
+				(estorno ? grupo("gEstornoCred", tag("vIBSEstCred", d2(estorno.ibs)) + tag("vCBSEstCred", d2(estorno.cbs))) : "") +
+				(cp ? grupo("gCredPresOper", tag("vBCCredPres", d2(cp.baseCalculo)) + tag("cCredPres", cp.codigo) + credito("IBS", cp.ibs) + credito("CBS", cp.cbs)) : ""),
+		);
 	}
 
 	const imposto = grupo(
 		"imposto",
 		tag("vTotTrib", d2(imp.valorAproximadoTributos)) + grupo("ICMS", grupoIcms(imp.icms, t)) +
 			(imp.ipi ? grupoIpi(imp.ipi) : "") + ii + (imp.pis ? grupoPisCofins("PIS", imp.pis) : "") +
-			(imp.cofins ? grupoPisCofins("COFINS", imp.cofins) : "") + difal + ibsCbs,
+			(imp.cofins ? grupoPisCofins("COFINS", imp.cofins) : "") + difal + seletivo + ibsCbs,
 	);
 
 	return `<det nItem="${numero}">${prod}${imposto}${tag("infAdProd", item.informacoesAdicionais)}</det>`;
@@ -389,7 +472,7 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 		vBC: 0, vICMS: 0, vICMSDeson: 0, vFCPUFDest: 0, vICMSUFDest: 0, vFCP: 0, vBCST: 0, vST: 0, vFCPST: 0,
 		vFCPSTRet: 0, vProd: 0, vFrete: 0, vSeg: 0, vDesc: 0, vII: 0, vIPI: 0, vPIS: 0, vCOFINS: 0, vOutro: 0, vTotTrib: 0,
 		deduzido: 0, temDifal: false, temTotTrib: false,
-		temIbsCbs: false, temValoresIbsCbs: false, vBCIBSCBS: 0, vIBSUF: 0, vIBSMun: 0, vCBS: 0,
+		temIbsCbs: false, temValoresIbsCbs: false, temIs: false, temEstorno: false, temSimples: false, rtc: {},
 	};
 	const itens = pedido.itens
 		.map((item, i) => detalhe(item, i + 1, t, homologacao && nfce && i === 0 ? HOMOLOGACAO_ITEM : item.descricao))
@@ -397,6 +480,7 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 
 	const vNF = t.vProd - t.vDesc - t.deduzido + t.vST + t.vFCPST + t.vFrete + t.vSeg + t.vOutro + t.vII + t.vIPI;
 	const r = (centavos: number) => (centavos / 100).toFixed(2);
+	const rtc = (chave: string) => r(t.rtc[chave] ?? 0);
 	const total = grupo(
 		"total",
 		grupo(
@@ -409,19 +493,27 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 				tag("vPIS", r(t.vPIS)) + tag("vCOFINS", r(t.vCOFINS)) + tag("vOutro", r(t.vOutro)) + tag("vNF", r(vNF)) +
 				(t.temTotTrib ? tag("vTotTrib", r(t.vTotTrib)) : ""),
 		) +
+			(t.temIs ? grupo("ISTot", tag("vIS", rtc("vIS"))) : "") +
 			(t.temIbsCbs
 				? grupo(
 						"IBSCBSTot",
-						tag("vBCIBSCBS", r(t.vBCIBSCBS)) +
+						tag("vBCIBSCBS", rtc("vBC")) +
 							(t.temValoresIbsCbs
 								? grupo(
 										"gIBS",
-										grupo("gIBSUF", tag("vDif", "0.00") + tag("vDevTrib", "0.00") + tag("vIBSUF", r(t.vIBSUF))) +
-											grupo("gIBSMun", tag("vDif", "0.00") + tag("vDevTrib", "0.00") + tag("vIBSMun", r(t.vIBSMun))) +
-											tag("vIBS", r(t.vIBSUF + t.vIBSMun)) + tag("vCredPres", "0.00") + tag("vCredPresCondSus", "0.00"),
+										grupo("gIBSUF", tag("vDif", rtc("vDifIBSUF")) + tag("vDevTrib", rtc("vDevTribIBSUF")) + tag("vIBSUF", rtc("vIBSUF"))) +
+											grupo("gIBSMun", tag("vDif", rtc("vDifIBSMun")) + tag("vDevTrib", rtc("vDevTribIBSMun")) + tag("vIBSMun", rtc("vIBSMun"))) +
+											tag("vIBS", r((t.rtc.vIBSUF ?? 0) + (t.rtc.vIBSMun ?? 0))) +
+											tag("vCredPres", rtc("vCredPresIBS")) + tag("vCredPresCondSus", rtc("vCredPresCondSusIBS")),
 									) +
-									grupo("gCBS", tag("vDif", "0.00") + tag("vDevTrib", "0.00") + tag("vCBS", r(t.vCBS)) + tag("vCredPres", "0.00") + tag("vCredPresCondSus", "0.00"))
-								: ""),
+									grupo(
+										"gCBS",
+										tag("vDif", rtc("vDifCBS")) + tag("vDevTrib", rtc("vDevTribCBS")) + tag("vCBS", rtc("vCBS")) +
+											tag("vCredPres", rtc("vCredPresCBS")) + tag("vCredPresCondSus", rtc("vCredPresCondSusCBS")),
+									)
+								: "") +
+							(t.temEstorno ? grupo("gEstornoCred", tag("vIBSEstCred", rtc("vIBSEstCred")) + tag("vCBSEstCred", rtc("vCBSEstCred"))) : "") +
+							(t.temSimples ? grupo("gTribSN", tag("vIBSSN", rtc("vIBSSN")) + tag("vCBSSN", rtc("vCBSSN"))) : ""),
 					)
 				: ""),
 	);

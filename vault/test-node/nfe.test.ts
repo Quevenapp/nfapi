@@ -272,6 +272,58 @@ describe("NF-e (modelo 55)", () => {
 		expect(semAdquirente.error?.issues[0]?.path.join(".")).toBe("itens.0.importacao.0.adquirente");
 	});
 
+	it("reforma tributária: redução, diferimento, devolução, tributação regular, crédito presumido e Imposto Seletivo", () => {
+		const zero = { aliquota: 0, valor: 0 };
+		const pedido = nfe({
+			itens: [
+				item({
+					impostoSeletivo: { cst: "000", classificacao: "000001", baseCalculo: 700, aliquota: 1, valor: 7 },
+					ibsCbs: {
+						cst: "200", classificacao: "200028", baseCalculo: 509.25,
+						ibsUf: { aliquota: 0.1, valor: 0.2, reducao: { percentual: 60, aliquotaEfetiva: 0.04 }, diferimento: { percentual: 10, valor: 0.02 }, devolucao: { percentual: 5, valor: 0.01 } },
+						ibsMunicipio: zero,
+						cbs: { aliquota: 8.8, valor: 17.93, reducao: { percentual: 60, aliquotaEfetiva: 3.52 } },
+						tributacaoRegular: { cst: "000", classificacao: "000001", ibsUf: { aliquotaEfetiva: 0.1, valor: 0.51 }, ibsMunicipio: { aliquotaEfetiva: 0, valor: 0 }, cbs: { aliquotaEfetiva: 8.8, valor: 44.81 } },
+						estornoCredito: { ibs: 0.05, cbs: 0.5 },
+						creditoPresumido: { baseCalculo: 509.25, codigo: "01", ibs: { aliquota: 1, valor: 5.09 }, cbs: { aliquota: 1, valor: 5.09, condicaoSuspensiva: true } },
+					},
+				}),
+				item(
+					{
+						impostoSeletivo: { cst: "000", classificacao: "000001", baseCalculo: 100, aliquota: 0, aliquotaEspecifica: 1.5, unidade: "LT", quantidade: 2, valor: 3 },
+						ibsCbs: {
+							cst: "000", classificacao: "000001", doacao: true, baseCalculo: 100, ibsUf: { aliquota: 0.1, valor: 0.1 }, ibsMunicipio: zero, cbs: { aliquota: 0.9, valor: 0.9 },
+							compraGovernamental: { ibsUf: { aliquota: 0.05, valor: 0.05 }, ibsMunicipio: zero, cbs: { aliquota: 0.45, valor: 0.45 } },
+						},
+					},
+					{ codigo: "SKU-2" },
+				),
+			],
+		});
+		const montada = montarNfe(pedido, contexto);
+		expect(validar(assinar(montada.xml, "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
+		// Item com alíquota reduzida, diferimento e devolução.
+		expect(montada.xml).toContain("<gIBSUF><pIBSUF>0.10</pIBSUF><gDif><pDif>10.00</pDif><vDif>0.02</vDif></gDif><gDevTrib><pDevTrib>5.00</pDevTrib><vDevTrib>0.01</vDevTrib></gDevTrib><gRed><pRedAliq>60.00</pRedAliq><pAliqEfet>0.04</pAliqEfet></gRed><vIBSUF>0.20</vIBSUF></gIBSUF>");
+		expect(montada.xml).toContain("<gCBS><pCBS>8.80</pCBS><gRed><pRedAliq>60.00</pRedAliq><pAliqEfet>3.52</pAliqEfet></gRed><vCBS>17.93</vCBS></gCBS><gTribRegular><CSTReg>000</CSTReg>");
+		expect(montada.xml).toContain("<gCBSCredPres><pCredPres>1.00</pCredPres><vCredPresCondSus>5.09</vCredPresCondSus></gCBSCredPres></gCredPresOper></IBSCBS>");
+		expect(montada.xml).toContain("<IS><CSTIS>000</CSTIS><cClassTribIS>000001</cClassTribIS><vBCIS>100.00</vBCIS><pIS>0.00</pIS><adRemIS>1.50</adRemIS><uTrib>LT</uTrib><qTrib>2.0000</qTrib><vIS>3.00</vIS></IS><IBSCBS><CST>000</CST><cClassTrib>000001</cClassTrib><indDoacao>1</indDoacao>");
+		expect(montada.xml).toContain("</gCBS><gTribCompraGov><pAliqIBSUF>0.05</pAliqIBSUF>");
+		// Totais somados pelo cofre.
+		expect(montada.xml).toContain("<ISTot><vIS>10.00</vIS></ISTot><IBSCBSTot><vBCIBSCBS>609.25</vBCIBSCBS>");
+		expect(montada.xml).toContain("<gIBS><gIBSUF><vDif>0.02</vDif><vDevTrib>0.01</vDevTrib><vIBSUF>0.30</vIBSUF></gIBSUF><gIBSMun><vDif>0.00</vDif><vDevTrib>0.00</vDevTrib><vIBSMun>0.00</vIBSMun></gIBSMun><vIBS>0.30</vIBS><vCredPres>5.09</vCredPres><vCredPresCondSus>0.00</vCredPresCondSus></gIBS>");
+		expect(montada.xml).toContain("<gCBS><vDif>0.00</vDif><vDevTrib>0.00</vDevTrib><vCBS>18.83</vCBS><vCredPres>0.00</vCredPres><vCredPresCondSus>5.09</vCredPresCondSus></gCBS><gEstornoCred><vIBSEstCred>0.05</vIBSEstCred><vCBSEstCred>0.50</vCBSEstCred></gEstornoCred></IBSCBSTot>");
+		// O valor da nota continua sem IBS, CBS e Imposto Seletivo.
+		expect(montada.total).toBe(1400);
+	});
+
+	it("reforma tributária no Simples Nacional: IBS e CBS recolhidos pelo regime", () => {
+		const ibsCbs = { cst: "000", classificacao: "000001", simplesNacional: { ibs: { aliquota: 0.5, valor: 3.5 }, cbs: { aliquota: 0.5, valor: 3.5 } } };
+		const montada = montarNfe(nfe({ emitente: simples, itens: [item({ icms: { csosn: "102" }, ibsCbs })] }), contexto);
+		expect(validar(assinar(montada.xml, "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
+		expect(montada.xml).toContain("<IBSCBS><CST>000</CST><cClassTrib>000001</cClassTrib><gTribSN><gIBSSN><pIBSSN>0.50</pIBSSN><vIBSSN>3.50</vIBSSN></gIBSSN><gCBSSN><pCBSSN>0.50</pCBSSN><vCBSSN>3.50</vCBSSN></gCBSSN></gTribSN></IBSCBS>");
+		expect(montada.xml).toContain("<IBSCBSTot><vBCIBSCBS>0.00</vBCIBSCBS><gTribSN><vIBSSN>3.50</vIBSSN><vCBSSN>3.50</vCBSSN></gTribSN></IBSCBSTot>");
+	});
+
 	it("o schema recusa regime e imposto incoerentes e devolução sem nota referenciada", () => {
 		const erro = (mudancas: Json) => NfeInput.safeParse({ ...BASE_NFE, ...mudancas }).error?.issues[0];
 		expect(erro({ emitente: simples })?.path.join(".")).toBe("itens.0.impostos.icms.csosn");

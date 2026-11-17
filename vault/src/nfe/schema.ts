@@ -132,6 +132,26 @@ const Icms = z
 	})
 	.refine((i) => (i.cst === undefined) !== (i.csosn === undefined), { message: "informe cst ou csosn (um dos dois)" });
 
+/** IBS (da UF ou do município) ou CBS de um item, com os ajustes que a reforma prevê. */
+const TributoIbsCbs = z.object({
+	aliquota: percentual,
+	valor,
+	/** Diferimento (gDif). */
+	diferimento: z.object({ percentual, valor }).optional(),
+	/** Devolução de tributo (gDevTrib). */
+	devolucao: z.object({ percentual: percentual.optional(), valor }).optional(),
+	/** Redução de alíquota (gRed): o percentual de redução e a alíquota efetiva que resulta. */
+	reducao: z.object({ percentual, aliquotaEfetiva: percentual }).optional(),
+});
+const AliquotaValor = z.object({ aliquota: percentual, valor });
+const AliquotaEfetiva = z.object({ aliquotaEfetiva: percentual, valor });
+const CreditoPresumido = z.object({
+	aliquota: percentual,
+	valor,
+	/** O crédito está sob condição suspensiva (vai em vCredPresCondSus). */
+	condicaoSuspensiva: z.boolean().default(false),
+});
+
 const PisCofins = z.object({
 	/** 01/02 alíquota, 04 a 09 não tributado, 49 a 99 outras operações. */
 	cst: z.string().regex(/^(0[1-9]|49|5[0-6]|6[0-7]|7[0-5]|98|99)$/, "CST de PIS/COFINS inválido"),
@@ -249,10 +269,43 @@ const Item = z.object({
 				cst: digitos(3),
 				/** cClassTrib: código de classificação tributária, 6 dígitos. */
 				classificacao: digitos(6),
+				/** Operação de doação (indDoacao). */
+				doacao: z.boolean().optional(),
 				baseCalculo: valor.optional(),
-				ibsUf: z.object({ aliquota: percentual, valor }).optional(),
-				ibsMunicipio: z.object({ aliquota: percentual, valor }).optional(),
-				cbs: z.object({ aliquota: percentual, valor }).optional(),
+				ibsUf: TributoIbsCbs.optional(),
+				ibsMunicipio: TributoIbsCbs.optional(),
+				cbs: TributoIbsCbs.optional(),
+				/** Como seria a tributação regular, quando a operação tem tratamento diferenciado (gTribRegular). */
+				tributacaoRegular: z
+					.object({ cst: digitos(3), classificacao: digitos(6), ibsUf: AliquotaEfetiva, ibsMunicipio: AliquotaEfetiva, cbs: AliquotaEfetiva })
+					.optional(),
+				/** Venda a órgão público (gTribCompraGov). */
+				compraGovernamental: z.object({ ibsUf: AliquotaValor, ibsMunicipio: AliquotaValor, cbs: AliquotaValor }).optional(),
+				/** Optante do Simples Nacional que recolhe IBS e CBS pelo regime (gTribSN). */
+				simplesNacional: z.object({ ibs: AliquotaValor.optional(), cbs: AliquotaValor }).optional(),
+				/** Estorno de crédito (gEstornoCred). */
+				estornoCredito: z.object({ ibs: valor, cbs: valor }).optional(),
+				/** Crédito presumido da operação (gCredPresOper). */
+				creditoPresumido: z
+					.object({ baseCalculo: valor, codigo: digitos(2), ibs: CreditoPresumido.optional(), cbs: CreditoPresumido.optional() })
+					.optional(),
+			})
+			.optional()
+			.describe(
+				"IBS e CBS do item, como calculados pelo sistema emissor. Sem baseCalculo, vão só o CST e a classificação. Não há suporte ao regime monofásico (combustíveis), à transferência de crédito, ao ajuste de competência nem ao crédito presumido da Zona Franca de Manaus.",
+			),
+		/** Imposto Seletivo. */
+		impostoSeletivo: z
+			.object({
+				cst: digitos(3),
+				classificacao: digitos(6),
+				baseCalculo: valor.optional(),
+				aliquota: percentual.optional(),
+				/** Alíquota específica, por unidade (adRemIS). */
+				aliquotaEspecifica: z.number().min(0).max(999.9999).optional(),
+				unidade: texto(6).optional(),
+				quantidade: z.number().min(0).max(99_999_999_999.9999).optional(),
+				valor: valor.optional(),
 			})
 			.optional(),
 		/** Diferencial de alíquota na venda interestadual a consumidor final não contribuinte. */
