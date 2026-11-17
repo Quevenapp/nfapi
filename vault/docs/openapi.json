@@ -2,7 +2,7 @@
 	"openapi": "3.1.0",
 	"info": {
 		"title": "Cofre NFapi",
-		"version": "0.4.1",
+		"version": "0.5.0",
 		"description": "API de emissão de notas fiscais do cofre NFapi, que roda na conta Cloudflare do emitente. Todas as chamadas levam uma chave de API criada na tela /setup do cofre. O cofre não calcula imposto: o sistema que chama informa bases, alíquotas e valores; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva. Erros vêm sempre como `{ \"erro\": { \"codigo\", \"mensagem\" } }`.",
 		"license": {
 			"name": "MIT"
@@ -3487,6 +3487,220 @@
 											"default": true,
 											"type": "boolean"
 										},
+										"importacao": {
+											"maxItems": 100,
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"numero": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 15
+													},
+													"data": {
+														"type": "string",
+														"pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+													},
+													"localDesembaraco": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 60
+													},
+													"ufDesembaraco": {
+														"type": "string",
+														"enum": [
+															"AC",
+															"AL",
+															"AM",
+															"AP",
+															"BA",
+															"CE",
+															"DF",
+															"ES",
+															"GO",
+															"MA",
+															"MG",
+															"MS",
+															"MT",
+															"PA",
+															"PB",
+															"PE",
+															"PI",
+															"PR",
+															"RJ",
+															"RN",
+															"RO",
+															"RR",
+															"RS",
+															"SC",
+															"SE",
+															"SP",
+															"TO"
+														]
+													},
+													"dataDesembaraco": {
+														"type": "string",
+														"pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+													},
+													"viaTransporte": {
+														"type": "integer",
+														"minimum": 1,
+														"maximum": 13
+													},
+													"afrmm": {
+														"type": "number",
+														"minimum": 0,
+														"maximum": 9999999999999.99
+													},
+													"intermediacao": {
+														"default": "conta_propria",
+														"type": "string",
+														"enum": [
+															"conta_propria",
+															"conta_e_ordem",
+															"encomenda"
+														]
+													},
+													"adquirente": {
+														"type": "object",
+														"properties": {
+															"cnpj": {
+																"type": "string",
+																"pattern": "^[0-9A-Z]{12}\\d{2}$"
+															},
+															"cpf": {
+																"type": "string",
+																"pattern": "^\\d{11}$"
+															},
+															"uf": {
+																"type": "string",
+																"enum": [
+																	"AC",
+																	"AL",
+																	"AM",
+																	"AP",
+																	"BA",
+																	"CE",
+																	"DF",
+																	"ES",
+																	"GO",
+																	"MA",
+																	"MG",
+																	"MS",
+																	"MT",
+																	"PA",
+																	"PB",
+																	"PE",
+																	"PI",
+																	"PR",
+																	"RJ",
+																	"RN",
+																	"RO",
+																	"RR",
+																	"RS",
+																	"SC",
+																	"SE",
+																	"SP",
+																	"TO"
+																]
+															}
+														}
+													},
+													"codigoExportador": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 60
+													},
+													"adicoes": {
+														"minItems": 1,
+														"maxItems": 999,
+														"type": "array",
+														"items": {
+															"type": "object",
+															"properties": {
+																"numero": {
+																	"type": "integer",
+																	"minimum": 1,
+																	"maximum": 999
+																},
+																"sequencia": {
+																	"type": "integer",
+																	"minimum": 1,
+																	"maximum": 99999
+																},
+																"codigoFabricante": {
+																	"type": "string",
+																	"minLength": 1,
+																	"maxLength": 60
+																},
+																"desconto": {
+																	"type": "number",
+																	"exclusiveMinimum": 0,
+																	"maximum": 9999999999999.99
+																},
+																"drawback": {
+																	"type": "string",
+																	"minLength": 1,
+																	"maxLength": 20
+																}
+															},
+															"required": [
+																"sequencia",
+																"codigoFabricante"
+															]
+														}
+													}
+												},
+												"required": [
+													"numero",
+													"data",
+													"localDesembaraco",
+													"ufDesembaraco",
+													"dataDesembaraco",
+													"viaTransporte",
+													"codigoExportador",
+													"adicoes"
+												]
+											}
+										},
+										"exportacao": {
+											"maxItems": 500,
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"drawback": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 20
+													},
+													"indireta": {
+														"type": "object",
+														"properties": {
+															"registroExportacao": {
+																"type": "string",
+																"pattern": "^\\d{0,12}$"
+															},
+															"chaveNfe": {
+																"type": "string",
+																"pattern": "^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$"
+															},
+															"quantidade": {
+																"type": "number",
+																"minimum": 0,
+																"maximum": 99999999999.9999
+															}
+														},
+														"required": [
+															"registroExportacao",
+															"chaveNfe",
+															"quantidade"
+														]
+													}
+												}
+											}
+										},
 										"numeroPedido": {
 											"type": "string",
 											"minLength": 1,
@@ -3833,6 +4047,37 @@
 													},
 													"required": [
 														"cst"
+													]
+												},
+												"ii": {
+													"type": "object",
+													"properties": {
+														"baseCalculo": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"despesasAduaneiras": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"valor": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"iof": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														}
+													},
+													"required": [
+														"baseCalculo",
+														"despesasAduaneiras",
+														"valor",
+														"iof"
 													]
 												},
 												"pis": {
@@ -4196,8 +4441,9 @@
 										"pattern": "^\\d{11}$"
 									},
 									"idEstrangeiro": {
+										"description": "Passaporte ou outro documento do estrangeiro. Use \"\" quando não houver documento.",
 										"type": "string",
-										"pattern": "^[A-Za-z0-9]{0,20}$"
+										"pattern": "^([A-Za-z0-9]{5,20})?$"
 									},
 									"nome": {
 										"type": "string",
@@ -4284,8 +4530,10 @@
 													"SC",
 													"SE",
 													"SP",
-													"TO"
-												]
+													"TO",
+													"EX"
+												],
+												"description": "UF do destinatário. No exterior: \"EX\", com codigoMunicipio \"9999999\" e municipio \"EXTERIOR\"."
 											},
 											"cep": {
 												"type": "string",
@@ -4294,6 +4542,17 @@
 											"telefone": {
 												"type": "string",
 												"pattern": "^\\d{6,14}$"
+											},
+											"codigoPais": {
+												"description": "Código do país na tabela do Banco Central (padrão: 1058, Brasil).",
+												"type": "string",
+												"pattern": "^\\d{1,4}$"
+											},
+											"pais": {
+												"description": "Nome do país (padrão: Brasil).",
+												"type": "string",
+												"minLength": 1,
+												"maxLength": 60
 											}
 										},
 										"required": [
@@ -4306,6 +4565,57 @@
 										]
 									}
 								}
+							},
+							"exportacao": {
+								"type": "object",
+								"properties": {
+									"ufEmbarque": {
+										"type": "string",
+										"enum": [
+											"AC",
+											"AL",
+											"AM",
+											"AP",
+											"BA",
+											"CE",
+											"DF",
+											"ES",
+											"GO",
+											"MA",
+											"MG",
+											"MS",
+											"MT",
+											"PA",
+											"PB",
+											"PE",
+											"PI",
+											"PR",
+											"RJ",
+											"RN",
+											"RO",
+											"RR",
+											"RS",
+											"SC",
+											"SE",
+											"SP",
+											"TO"
+										]
+									},
+									"localEmbarque": {
+										"type": "string",
+										"minLength": 1,
+										"maxLength": 60
+									},
+									"localDespacho": {
+										"type": "string",
+										"minLength": 1,
+										"maxLength": 60
+									}
+								},
+								"required": [
+									"ufEmbarque",
+									"localEmbarque"
+								]
 							},
 							"transporte": {
 								"default": {
@@ -4887,6 +5197,220 @@
 											"default": true,
 											"type": "boolean"
 										},
+										"importacao": {
+											"maxItems": 100,
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"numero": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 15
+													},
+													"data": {
+														"type": "string",
+														"pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+													},
+													"localDesembaraco": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 60
+													},
+													"ufDesembaraco": {
+														"type": "string",
+														"enum": [
+															"AC",
+															"AL",
+															"AM",
+															"AP",
+															"BA",
+															"CE",
+															"DF",
+															"ES",
+															"GO",
+															"MA",
+															"MG",
+															"MS",
+															"MT",
+															"PA",
+															"PB",
+															"PE",
+															"PI",
+															"PR",
+															"RJ",
+															"RN",
+															"RO",
+															"RR",
+															"RS",
+															"SC",
+															"SE",
+															"SP",
+															"TO"
+														]
+													},
+													"dataDesembaraco": {
+														"type": "string",
+														"pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+													},
+													"viaTransporte": {
+														"type": "integer",
+														"minimum": 1,
+														"maximum": 13
+													},
+													"afrmm": {
+														"type": "number",
+														"minimum": 0,
+														"maximum": 9999999999999.99
+													},
+													"intermediacao": {
+														"default": "conta_propria",
+														"type": "string",
+														"enum": [
+															"conta_propria",
+															"conta_e_ordem",
+															"encomenda"
+														]
+													},
+													"adquirente": {
+														"type": "object",
+														"properties": {
+															"cnpj": {
+																"type": "string",
+																"pattern": "^[0-9A-Z]{12}\\d{2}$"
+															},
+															"cpf": {
+																"type": "string",
+																"pattern": "^\\d{11}$"
+															},
+															"uf": {
+																"type": "string",
+																"enum": [
+																	"AC",
+																	"AL",
+																	"AM",
+																	"AP",
+																	"BA",
+																	"CE",
+																	"DF",
+																	"ES",
+																	"GO",
+																	"MA",
+																	"MG",
+																	"MS",
+																	"MT",
+																	"PA",
+																	"PB",
+																	"PE",
+																	"PI",
+																	"PR",
+																	"RJ",
+																	"RN",
+																	"RO",
+																	"RR",
+																	"RS",
+																	"SC",
+																	"SE",
+																	"SP",
+																	"TO"
+																]
+															}
+														}
+													},
+													"codigoExportador": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 60
+													},
+													"adicoes": {
+														"minItems": 1,
+														"maxItems": 999,
+														"type": "array",
+														"items": {
+															"type": "object",
+															"properties": {
+																"numero": {
+																	"type": "integer",
+																	"minimum": 1,
+																	"maximum": 999
+																},
+																"sequencia": {
+																	"type": "integer",
+																	"minimum": 1,
+																	"maximum": 99999
+																},
+																"codigoFabricante": {
+																	"type": "string",
+																	"minLength": 1,
+																	"maxLength": 60
+																},
+																"desconto": {
+																	"type": "number",
+																	"exclusiveMinimum": 0,
+																	"maximum": 9999999999999.99
+																},
+																"drawback": {
+																	"type": "string",
+																	"minLength": 1,
+																	"maxLength": 20
+																}
+															},
+															"required": [
+																"sequencia",
+																"codigoFabricante"
+															]
+														}
+													}
+												},
+												"required": [
+													"numero",
+													"data",
+													"localDesembaraco",
+													"ufDesembaraco",
+													"dataDesembaraco",
+													"viaTransporte",
+													"codigoExportador",
+													"adicoes"
+												]
+											}
+										},
+										"exportacao": {
+											"maxItems": 500,
+											"type": "array",
+											"items": {
+												"type": "object",
+												"properties": {
+													"drawback": {
+														"type": "string",
+														"minLength": 1,
+														"maxLength": 20
+													},
+													"indireta": {
+														"type": "object",
+														"properties": {
+															"registroExportacao": {
+																"type": "string",
+																"pattern": "^\\d{0,12}$"
+															},
+															"chaveNfe": {
+																"type": "string",
+																"pattern": "^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$"
+															},
+															"quantidade": {
+																"type": "number",
+																"minimum": 0,
+																"maximum": 99999999999.9999
+															}
+														},
+														"required": [
+															"registroExportacao",
+															"chaveNfe",
+															"quantidade"
+														]
+													}
+												}
+											}
+										},
 										"numeroPedido": {
 											"type": "string",
 											"minLength": 1,
@@ -5235,6 +5759,37 @@
 														"cst"
 													]
 												},
+												"ii": {
+													"type": "object",
+													"properties": {
+														"baseCalculo": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"despesasAduaneiras": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"valor": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														},
+														"iof": {
+															"type": "number",
+															"minimum": 0,
+															"maximum": 9999999999999.99
+														}
+													},
+													"required": [
+														"baseCalculo",
+														"despesasAduaneiras",
+														"valor",
+														"iof"
+													]
+												},
 												"pis": {
 													"type": "object",
 													"properties": {
@@ -5568,8 +6123,9 @@
 										"pattern": "^\\d{11}$"
 									},
 									"idEstrangeiro": {
+										"description": "Passaporte ou outro documento do estrangeiro. Use \"\" quando não houver documento.",
 										"type": "string",
-										"pattern": "^[A-Za-z0-9]{0,20}$"
+										"pattern": "^([A-Za-z0-9]{5,20})?$"
 									},
 									"nome": {
 										"type": "string",
@@ -5656,8 +6212,10 @@
 													"SC",
 													"SE",
 													"SP",
-													"TO"
-												]
+													"TO",
+													"EX"
+												],
+												"description": "UF do destinatário. No exterior: \"EX\", com codigoMunicipio \"9999999\" e municipio \"EXTERIOR\"."
 											},
 											"cep": {
 												"type": "string",
@@ -5666,6 +6224,17 @@
 											"telefone": {
 												"type": "string",
 												"pattern": "^\\d{6,14}$"
+											},
+											"codigoPais": {
+												"description": "Código do país na tabela do Banco Central (padrão: 1058, Brasil).",
+												"type": "string",
+												"pattern": "^\\d{1,4}$"
+											},
+											"pais": {
+												"description": "Nome do país (padrão: Brasil).",
+												"type": "string",
+												"minLength": 1,
+												"maxLength": 60
 											}
 										},
 										"required": [

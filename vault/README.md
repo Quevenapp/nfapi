@@ -65,6 +65,7 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 - **Sem lacunas por rejeição.** Nota rejeitada não existe para a SEFAZ: o número volta para a série.
 - **UFs atendidas.** NF-e: SP e as UFs autorizadas pela SVRS (AC, AL, AP, CE, DF, ES, PA, PB, PI, RJ, RN, RO, RR, SC, SE, TO). NFC-e: SP. `GET /v1/cofre` devolve a lista da versão instalada.
 - **Reforma tributária.** O grupo de IBS e CBS (`impostos.ibsCbs`) já é exigido do regime normal em homologação; o cofre o repassa como informado.
+- **Exportação e importação.** Na exportação, o destinatário vai com `idEstrangeiro` e endereço no exterior (`uf: "EX"`, `codigoMunicipio: "9999999"`, `codigoPais`), a nota leva `exportacao` (UF e local de embarque) e o item pode levar `exportacao` (drawback e exportação indireta). Na importação, o item leva `importacao` (a declaração de importação com as adições) e `impostos.ii`.
 - **Ainda não há:** DANFE e DANFCE em PDF, contingência da NF-e (SVC) e eventos além de cancelamento e carta de correção.
 
 ### Contingência da NFC-e

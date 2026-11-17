@@ -53,13 +53,22 @@ const Destinatario = z
 		cnpj: cnpj.optional(),
 		cpf: cpf.optional(),
 		/** Documento de estrangeiro (operação com o exterior). */
-		idEstrangeiro: z.string().regex(/^[A-Za-z0-9]{0,20}$/).optional(),
+		idEstrangeiro: z
+			.string()
+			.regex(/^([A-Za-z0-9]{5,20})?$/, "vazio ou de 5 a 20 letras e números")
+			.optional()
+			.describe('Passaporte ou outro documento do estrangeiro. Use "" quando não houver documento.'),
 		nome: texto(60, 2).optional(),
 		/** contribuinte (1), isento (2) ou nao_contribuinte (9). */
 		indicadorIe: z.enum(["contribuinte", "isento", "nao_contribuinte"]).default("nao_contribuinte"),
 		inscricaoEstadual: z.string().regex(/^\d{2,14}$/, "só dígitos").optional(),
 		email: z.string().trim().max(60).email().optional(),
-		endereco: Endereco.extend({ cep: digitos(8).optional() }).optional(),
+		endereco: Endereco.extend({
+			cep: digitos(8).optional(),
+			uf: z.enum([...UFS, "EX"]).describe('UF do destinatário. No exterior: "EX", com codigoMunicipio "9999999" e municipio "EXTERIOR".'),
+			codigoPais: z.string().regex(/^\d{1,4}$/).optional().describe("Código do país na tabela do Banco Central (padrão: 1058, Brasil)."),
+			pais: texto(60).optional().describe("Nome do país (padrão: Brasil)."),
+		}).optional(),
 	})
 	.refine((d) => [d.cnpj, d.cpf, d.idEstrangeiro].filter((v) => v !== undefined).length === 1, {
 		message: "informe exatamente um entre cnpj, cpf e idEstrangeiro",
@@ -131,6 +140,53 @@ const PisCofins = z.object({
 	valor: valor.optional(),
 });
 
+/** Declaração de importação (DI, DSI, DIRE ou DUImp) de um item importado. */
+const Importacao = z
+	.object({
+		numero: texto(15),
+		data,
+		localDesembaraco: texto(60),
+		ufDesembaraco: Uf,
+		dataDesembaraco: data,
+		/** tpViaTransp: 1 marítima, 4 aérea, 5 postal, 7 rodoviária... até 13. */
+		viaTransporte: z.number().int().min(1).max(13),
+		/** Adicional ao Frete para Renovação da Marinha Mercante (obrigatório na via marítima). */
+		afrmm: valor.optional(),
+		/** tpIntermedio: conta_propria (1), conta_e_ordem (2) ou encomenda (3). */
+		intermediacao: z.enum(["conta_propria", "conta_e_ordem", "encomenda"]).default("conta_propria"),
+		/** Adquirente ou encomendante, quando a importação não é por conta própria. */
+		adquirente: z.object({ cnpj: cnpj.optional(), cpf: cpf.optional(), uf: Uf.optional() }).optional(),
+		codigoExportador: texto(60),
+		adicoes: z
+			.array(
+				z.object({
+					numero: z.number().int().min(1).max(999).optional(),
+					sequencia: z.number().int().min(1).max(99_999),
+					codigoFabricante: texto(60),
+					desconto: z.number().positive().max(9_999_999_999_999.99).optional(),
+					drawback: texto(20).optional(),
+				}),
+			)
+			.min(1)
+			.max(999),
+	})
+	.refine((i) => i.intermediacao === "conta_propria" || i.adquirente?.cnpj || i.adquirente?.cpf, {
+		message: "informe o adquirente (cnpj ou cpf) na importação por conta e ordem ou por encomenda",
+		path: ["adquirente"],
+	});
+
+/** Dados de exportação de um item: drawback e, na exportação indireta, a nota de remessa. */
+const ExportacaoDoItem = z.object({
+	drawback: texto(20).optional(),
+	indireta: z
+		.object({
+			registroExportacao: z.string().regex(/^\d{0,12}$/, "até 12 dígitos"),
+			chaveNfe: z.string().regex(/^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$/, "chave de acesso com 44 posições"),
+			quantidade: z.number().min(0).max(99_999_999_999.9999),
+		})
+		.optional(),
+});
+
 const Item = z.object({
 	codigo: texto(60),
 	/** GTIN; sem código de barras, deixe em branco ("SEM GTIN"). */
@@ -160,6 +216,10 @@ const Item = z.object({
 	outrasDespesas: valor.optional(),
 	/** O valor do item entra no total da nota? */
 	compoeTotal: z.boolean().default(true),
+	/** Item importado: uma entrada por declaração de importação. */
+	importacao: z.array(Importacao).max(100).optional(),
+	/** Item exportado: drawback e dados da exportação indireta. */
+	exportacao: z.array(ExportacaoDoItem).max(500).optional(),
 	numeroPedido: texto(15).optional(),
 	itemPedido: z.number().int().min(0).max(999_999).optional(),
 	informacoesAdicionais: texto(500).optional(),
@@ -176,6 +236,8 @@ const Item = z.object({
 				valor: valor.optional(),
 			})
 			.optional(),
+		/** Imposto de importação. */
+		ii: z.object({ baseCalculo: valor, despesasAduaneiras: valor, valor, iof: valor }).optional(),
 		pis: PisCofins.optional(),
 		cofins: PisCofins.optional(),
 		/**
@@ -319,6 +381,14 @@ export const NfeInput = z
 		/** Padrão: decidido pelas UFs do emitente e do destinatário. */
 		destinoOperacao: z.enum(["interna", "interestadual", "exterior"]).optional(),
 		destinatario: Destinatario,
+		/** Nota de exportação: por onde a mercadoria sai do país. */
+		exportacao: z
+			.object({
+				ufEmbarque: Uf,
+				localEmbarque: texto(60),
+				localDespacho: texto(60).optional(),
+			})
+			.optional(),
 		transporte: Transporte.default({ modalidade: 9 }),
 		cobranca: z
 			.object({

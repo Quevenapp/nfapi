@@ -208,6 +208,70 @@ describe("NF-e (modelo 55)", () => {
 		expect(montada.total).toBe(735);
 	});
 
+	const estrangeiro = {
+		idEstrangeiro: "AB123456",
+		nome: "Importer Inc",
+		indicadorIe: "nao_contribuinte",
+		endereco: { logradouro: "5th Avenue", numero: "100", bairro: "Manhattan", codigoMunicipio: "9999999", municipio: "EXTERIOR", uf: "EX", codigoPais: "2496", pais: "Estados Unidos" },
+	};
+
+	it("exportação: destinatário no exterior, local de embarque e dados de exportação do item", () => {
+		const pedido = nfe({
+			destinatario: estrangeiro,
+			exportacao: { ufEmbarque: "SP", localEmbarque: "Porto de Santos", localDespacho: "Alfandega de Santos" },
+			itens: [
+				item(
+					{ icms: { cst: "41" }, pis: { cst: "08" }, cofins: { cst: "08" }, ibsCbs: undefined },
+					{ cfop: "7101", exportacao: [{ drawback: "20260000011" }, { indireta: { registroExportacao: "123456789012", chaveNfe: "35261111222333000181550010000000411876543210", quantidade: 2 } }] },
+				),
+			],
+		});
+		const montada = montarNfe(pedido, { ...contexto, ambiente: "producao" });
+		expect(validar(assinar(montada.xml, "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
+		expect(montada.xml).toContain("<idDest>3</idDest>");
+		expect(montada.xml).toContain("<dest><idEstrangeiro>AB123456</idEstrangeiro><xNome>Importer Inc</xNome>");
+		expect(montada.xml).toContain("<cMun>9999999</cMun><xMun>EXTERIOR</xMun><UF>EX</UF><cPais>2496</cPais><xPais>Estados Unidos</xPais>");
+		expect(montada.xml).toContain("<indTot>1</indTot><detExport><nDraw>20260000011</nDraw></detExport><detExport><exportInd><nRE>123456789012</nRE>");
+		expect(montada.xml).toContain("<exporta><UFSaidaPais>SP</UFSaidaPais><xLocExporta>Porto de Santos</xLocExporta><xLocDespacho>Alfandega de Santos</xLocDespacho></exporta>");
+		// O emitente continua com o país padrão.
+		expect(montada.xml).toContain("<enderEmit><xLgr>Rua das Flores</xLgr>");
+		expect(montada.xml).toMatch(/<enderEmit>.*?<cPais>1058<\/cPais><xPais>Brasil<\/xPais>/);
+		// Estrangeiro sem documento: a tag vai vazia.
+		const semDocumento = montarNfe(nfe({ destinatario: { ...estrangeiro, idEstrangeiro: "" } }), contexto);
+		expect(validar(assinar(semDocumento.xml, "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
+		expect(semDocumento.xml).toContain("<dest><idEstrangeiro></idEstrangeiro>");
+	});
+
+	it("importação: declaração de importação com adições e imposto de importação no total", () => {
+		const di = {
+			numero: "2612345678", data: "2026-11-10", localDesembaraco: "Porto de Santos", ufDesembaraco: "SP", dataDesembaraco: "2026-11-12",
+			viaTransporte: 1, afrmm: 25.5, intermediacao: "conta_e_ordem", adquirente: { cnpj: "55444333000122", uf: "SP" }, codigoExportador: "EXP-001",
+			adicoes: [{ numero: 1, sequencia: 1, codigoFabricante: "FAB-9", desconto: 10 }, { sequencia: 2, codigoFabricante: "FAB-9", drawback: "20260000011" }],
+		};
+		const pedido = nfe({
+			tipo: "entrada",
+			destinatario: estrangeiro,
+			itens: [item({ ii: { baseCalculo: 700, despesasAduaneiras: 50, valor: 98, iof: 0 }, ipi: { cst: "00", baseCalculo: 798, aliquota: 5, valor: 39.9 } }, { cfop: "3102", importacao: [di] })],
+		});
+		const montada = montarNfe(pedido, contexto);
+		expect(validar(assinar(montada.xml, "infNFe"), "nfe/nfe_v4.00.xsd")).toEqual([]);
+		expect(montada.xml).toContain("<tpNF>0</tpNF><idDest>3</idDest>");
+		expect(montada.xml).toContain(
+			"<DI><nDI>2612345678</nDI><dDI>2026-11-10</dDI><xLocDesemb>Porto de Santos</xLocDesemb><UFDesemb>SP</UFDesemb><dDesemb>2026-11-12</dDesemb>" +
+				"<tpViaTransp>1</tpViaTransp><vAFRMM>25.50</vAFRMM><tpIntermedio>2</tpIntermedio><CNPJ>55444333000122</CNPJ><UFTerceiro>SP</UFTerceiro><cExportador>EXP-001</cExportador>" +
+				"<adi><nAdicao>1</nAdicao><nSeqAdic>1</nSeqAdic><cFabricante>FAB-9</cFabricante><vDescDI>10.00</vDescDI></adi>" +
+				"<adi><nSeqAdic>2</nSeqAdic><cFabricante>FAB-9</cFabricante><nDraw>20260000011</nDraw></adi></DI>",
+		);
+		expect(montada.xml).toContain("<II><vBC>700.00</vBC><vDespAdu>50.00</vDespAdu><vII>98.00</vII><vIOF>0.00</vIOF></II>");
+		// O imposto de importação e o IPI entram no valor da nota.
+		expect(montada.xml).toContain("<vII>98.00</vII><vIPI>39.90</vIPI>");
+		expect(montada.total).toBe(837.9);
+
+		// Por conta e ordem ou por encomenda, o adquirente é obrigatório.
+		const semAdquirente = NfeInput.safeParse({ ...BASE_NFE, itens: [item({}, { importacao: [{ ...di, adquirente: undefined }] })] });
+		expect(semAdquirente.error?.issues[0]?.path.join(".")).toBe("itens.0.importacao.0.adquirente");
+	});
+
 	it("o schema recusa regime e imposto incoerentes e devolução sem nota referenciada", () => {
 		const erro = (mudancas: Json) => NfeInput.safeParse({ ...BASE_NFE, ...mudancas }).error?.issues[0];
 		expect(erro({ emitente: simples })?.path.join(".")).toBe("itens.0.impostos.icms.csosn");

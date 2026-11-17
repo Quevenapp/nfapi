@@ -74,7 +74,7 @@ const normalizarDataHora = (v: string) => v.replace(/\.\d+/, "").replace(/Z$/, "
 interface Totais {
 	vBC: number; vICMS: number; vICMSDeson: number; vFCPUFDest: number; vICMSUFDest: number; vFCP: number;
 	vBCST: number; vST: number; vFCPST: number; vFCPSTRet: number; vProd: number; vFrete: number; vSeg: number;
-	vDesc: number; vIPI: number; vPIS: number; vCOFINS: number; vOutro: number; vTotTrib: number;
+	vDesc: number; vII: number; vIPI: number; vPIS: number; vCOFINS: number; vOutro: number; vTotTrib: number;
 	/** Desoneração que reduz o valor da nota (indDeduzDeson = 1). */
 	deduzido: number;
 	temDifal: boolean; temTotTrib: boolean;
@@ -207,6 +207,39 @@ function grupoIpi(ipi: NonNullable<Item["impostos"]["ipi"]>): string {
 	);
 }
 
+const INTERMEDIACAO = { conta_propria: "1", conta_e_ordem: "2", encomenda: "3" } as const;
+
+/** Declarações de importação do item (grupo DI, com as adições). */
+function importacoes(item: Item): string {
+	return (item.importacao ?? [])
+		.map((di) =>
+			grupo(
+				"DI",
+				tag("nDI", di.numero) + tag("dDI", di.data) + tag("xLocDesemb", di.localDesembaraco) + tag("UFDesemb", di.ufDesembaraco) +
+					tag("dDesemb", di.dataDesembaraco) + tag("tpViaTransp", di.viaTransporte) + tag("vAFRMM", d2(di.afrmm)) +
+					tag("tpIntermedio", INTERMEDIACAO[di.intermediacao]) + tag("CNPJ", di.adquirente?.cnpj) + tag("CPF", di.adquirente?.cpf) +
+					tag("UFTerceiro", di.adquirente?.uf) + tag("cExportador", di.codigoExportador) +
+					di.adicoes
+						.map((a) => grupo("adi", tag("nAdicao", a.numero) + tag("nSeqAdic", a.sequencia) + tag("cFabricante", a.codigoFabricante) + tag("vDescDI", d2(a.desconto)) + tag("nDraw", a.drawback)))
+						.join(""),
+			),
+		)
+		.join("");
+}
+
+/** Dados de exportação do item (grupo detExport). */
+function exportacoes(item: Item): string {
+	return (item.exportacao ?? [])
+		.map((e) =>
+			grupo(
+				"detExport",
+				tag("nDraw", e.drawback) +
+					(e.indireta ? grupo("exportInd", `<nRE>${e.indireta.registroExportacao}</nRE>` + tag("chNFe", e.indireta.chaveNfe) + tag("qExport", qtd(e.indireta.quantidade))) : ""),
+			),
+		)
+		.join("");
+}
+
 function detalhe(item: Item, numero: number, t: Totais, descricao: string): string {
 	const vProd = item.valorTotal ?? Math.round(item.quantidade * item.valorUnitario * 100) / 100;
 	const trib = item.tributavel ?? { ean: item.ean, unidade: item.unidade, quantidade: item.quantidade, valorUnitario: item.valorUnitario };
@@ -218,6 +251,7 @@ function detalhe(item: Item, numero: number, t: Totais, descricao: string): stri
 	t.vDesc += cent(item.desconto);
 	t.vOutro += cent(item.outrasDespesas);
 	t.vIPI += cent(imp.ipi?.valor);
+	t.vII += cent(imp.ii?.valor);
 	t.vPIS += cent(imp.pis?.valor);
 	t.vCOFINS += cent(imp.cofins?.valor);
 	if (imp.valorAproximadoTributos !== undefined) {
@@ -239,8 +273,12 @@ function detalhe(item: Item, numero: number, t: Totais, descricao: string): stri
 			tag("qTrib", qtd(trib.quantidade)) + tag("vUnTrib", unit(trib.valorUnitario)) +
 			tag("vFrete", item.frete ? d2(item.frete) : undefined) + tag("vSeg", item.seguro ? d2(item.seguro) : undefined) +
 			tag("vDesc", item.desconto ? d2(item.desconto) : undefined) + tag("vOutro", item.outrasDespesas ? d2(item.outrasDespesas) : undefined) +
-			tag("indTot", item.compoeTotal ? "1" : "0") + tag("xPed", item.numeroPedido) + tag("nItemPed", item.itemPedido),
+			tag("indTot", item.compoeTotal ? "1" : "0") + importacoes(item) + exportacoes(item) +
+			tag("xPed", item.numeroPedido) + tag("nItemPed", item.itemPedido),
 	);
+	const ii = imp.ii
+		? grupo("II", tag("vBC", d2(imp.ii.baseCalculo)) + tag("vDespAdu", d2(imp.ii.despesasAduaneiras)) + tag("vII", d2(imp.ii.valor)) + tag("vIOF", d2(imp.ii.iof)))
+		: "";
 
 	const difal = imp.difal
 		? grupo(
@@ -279,7 +317,7 @@ function detalhe(item: Item, numero: number, t: Totais, descricao: string): stri
 	const imposto = grupo(
 		"imposto",
 		tag("vTotTrib", d2(imp.valorAproximadoTributos)) + grupo("ICMS", grupoIcms(imp.icms, t)) +
-			(imp.ipi ? grupoIpi(imp.ipi) : "") + (imp.pis ? grupoPisCofins("PIS", imp.pis) : "") +
+			(imp.ipi ? grupoIpi(imp.ipi) : "") + ii + (imp.pis ? grupoPisCofins("PIS", imp.pis) : "") +
 			(imp.cofins ? grupoPisCofins("COFINS", imp.cofins) : "") + difal + ibsCbs,
 	);
 
@@ -291,7 +329,7 @@ function endereco(nome: "enderEmit" | "enderDest", e: NonNullable<NfeInput["dest
 		nome,
 		tag("xLgr", e.logradouro) + tag("nro", e.numero) + tag("xCpl", e.complemento) + tag("xBairro", e.bairro) +
 			tag("cMun", e.codigoMunicipio) + tag("xMun", e.municipio) + tag("UF", e.uf) + tag("CEP", e.cep) +
-			tag("cPais", "1058") + tag("xPais", "Brasil") + tag("fone", e.telefone),
+			tag("cPais", ("codigoPais" in e ? e.codigoPais : undefined) ?? "1058") + tag("xPais", ("pais" in e ? e.pais : undefined) ?? "Brasil") + tag("fone", e.telefone),
 	);
 }
 
@@ -309,7 +347,7 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 	const dest = pedido.destinatario;
 	const destino = nfce
 		? "1"
-		: (DESTINO[(pedido as NfeInput).destinoOperacao ?? (dest?.idEstrangeiro !== undefined ? "exterior" : !dest?.endereco || dest.endereco.uf === uf ? "interna" : "interestadual")]);
+		: (DESTINO[(pedido as NfeInput).destinoOperacao ?? (dest?.idEstrangeiro !== undefined || dest?.endereco?.uf === "EX" ? "exterior" : !dest?.endereco || dest.endereco.uf === uf ? "interna" : "interestadual")]);
 	const presenca = PRESENCA[pedido.presenca];
 	const semPresenca = ["2", "3", "4", "9"].includes(presenca);
 
@@ -349,7 +387,7 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 
 	const t: Totais = {
 		vBC: 0, vICMS: 0, vICMSDeson: 0, vFCPUFDest: 0, vICMSUFDest: 0, vFCP: 0, vBCST: 0, vST: 0, vFCPST: 0,
-		vFCPSTRet: 0, vProd: 0, vFrete: 0, vSeg: 0, vDesc: 0, vIPI: 0, vPIS: 0, vCOFINS: 0, vOutro: 0, vTotTrib: 0,
+		vFCPSTRet: 0, vProd: 0, vFrete: 0, vSeg: 0, vDesc: 0, vII: 0, vIPI: 0, vPIS: 0, vCOFINS: 0, vOutro: 0, vTotTrib: 0,
 		deduzido: 0, temDifal: false, temTotTrib: false,
 		temIbsCbs: false, temValoresIbsCbs: false, vBCIBSCBS: 0, vIBSUF: 0, vIBSMun: 0, vCBS: 0,
 	};
@@ -357,7 +395,7 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 		.map((item, i) => detalhe(item, i + 1, t, homologacao && nfce && i === 0 ? HOMOLOGACAO_ITEM : item.descricao))
 		.join("");
 
-	const vNF = t.vProd - t.vDesc - t.deduzido + t.vST + t.vFCPST + t.vFrete + t.vSeg + t.vOutro + t.vIPI;
+	const vNF = t.vProd - t.vDesc - t.deduzido + t.vST + t.vFCPST + t.vFrete + t.vSeg + t.vOutro + t.vII + t.vIPI;
 	const r = (centavos: number) => (centavos / 100).toFixed(2);
 	const total = grupo(
 		"total",
@@ -367,7 +405,7 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 				(t.temDifal ? tag("vFCPUFDest", r(t.vFCPUFDest)) + tag("vICMSUFDest", r(t.vICMSUFDest)) + tag("vICMSUFRemet", "0.00") : "") +
 				tag("vFCP", r(t.vFCP)) + tag("vBCST", r(t.vBCST)) + tag("vST", r(t.vST)) + tag("vFCPST", r(t.vFCPST)) +
 				tag("vFCPSTRet", r(t.vFCPSTRet)) + tag("vProd", r(t.vProd)) + tag("vFrete", r(t.vFrete)) + tag("vSeg", r(t.vSeg)) +
-				tag("vDesc", r(t.vDesc)) + tag("vII", "0.00") + tag("vIPI", r(t.vIPI)) + tag("vIPIDevol", "0.00") +
+				tag("vDesc", r(t.vDesc)) + tag("vII", r(t.vII)) + tag("vIPI", r(t.vIPI)) + tag("vIPIDevol", "0.00") +
 				tag("vPIS", r(t.vPIS)) + tag("vCOFINS", r(t.vCOFINS)) + tag("vOutro", r(t.vOutro)) + tag("vNF", r(vNF)) +
 				(t.temTotTrib ? tag("vTotTrib", r(t.vTotTrib)) : ""),
 		) +
@@ -435,12 +473,14 @@ export function montarNfe(pedido: PedidoNfe, ctx: NfeContexto): NfeMontada {
 		? grupo("infIntermed", tag("CNPJ", pedido.intermediador.cnpj) + tag("idCadIntTran", pedido.intermediador.identificacao))
 		: "";
 	const adicionais = grupo("infAdic", tag("infAdFisco", pedido.informacoesFisco) + tag("infCpl", pedido.informacoesComplementares));
+	const ex = nfce ? undefined : (pedido as NfeInput).exportacao;
+	const exporta = ex ? grupo("exporta", tag("UFSaidaPais", ex.ufEmbarque) + tag("xLocExporta", ex.localEmbarque) + tag("xLocDespacho", ex.localDespacho)) : "";
 	const rt = pedido.responsavelTecnico;
 	const responsavel = rt ? grupo("infRespTec", tag("CNPJ", rt.cnpj) + tag("xContato", rt.contato) + tag("email", rt.email) + tag("fone", rt.telefone)) : "";
 
 	const xml =
 		`<NFe xmlns="${NAMESPACE_NFE}"><infNFe Id="NFe${chave}" versao="4.00">` +
-		ide + emitente + destinatario + itens + total + transporte + cobranca + pagamento + intermediador + adicionais + responsavel +
+		ide + emitente + destinatario + itens + total + transporte + cobranca + pagamento + intermediador + adicionais + exporta + responsavel +
 		"</infNFe></NFe>";
 	return { xml, chave, dataEmissao, total: vNF / 100 };
 }
