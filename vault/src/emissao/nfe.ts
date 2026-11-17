@@ -715,7 +715,8 @@ export async function corrigirNfe(d1: D1Database, ops: Operacoes, emission: banc
 }
 
 export type ResultadoInutilizacao =
-	| { ok: true; inutilizacao: banco.Inutilizacao }
+	/** `repetida`: a faixa já estava inutilizada (no cofre ou na SEFAZ) e nada novo foi registrado. */
+	| { ok: true; inutilizacao: banco.Inutilizacao; repetida: boolean }
 	| { ok: false; status: 409 | 422 | 502; codigo: string; mensagem: string; mensagens: Mensagem[] };
 
 export async function inutilizarNumeracao(d1: D1Database, ops: Operacoes, input: InutilizacaoInput): Promise<ResultadoInutilizacao> {
@@ -733,6 +734,9 @@ export async function inutilizarNumeracao(d1: D1Database, ops: Operacoes, input:
 		);
 	}
 	const serieKey = { docId: cnpj, kind: input.modelo, environment: input.ambiente, serie: String(input.serie) };
+	// Repetir o pedido de uma faixa já inutilizada por este cofre devolve o registro.
+	const existente = await banco.findInutilizacao(d1, serieKey, input.numeroInicial, input.numeroFinal);
+	if (existente) return { ok: true, inutilizacao: existente, repetida: true };
 	if ((await banco.numerosEmUsoNaFaixa(d1, serieKey, input.numeroInicial, input.numeroFinal)) > 0) {
 		return recusar(409, "faixa_em_uso", "A faixa contém números de notas autorizadas ou em andamento neste cofre.");
 	}
@@ -755,20 +759,25 @@ export async function inutilizarNumeracao(d1: D1Database, ops: Operacoes, input:
 	if (lido.tipo === "indefinida") return recusar(502, "sem_resposta_conclusiva", lido.detalhe);
 	if (lido.tipo === "rejeitada") return recusar(422, "inutilizacao_rejeitada", lido.mensagem.descricao, [lido.mensagem]);
 
-	const destino = `${input.modelo}/${input.ambiente}/inutilizacoes/${pedido.id}.xml`;
-	await ops.putDocument(destino, procInutNFe(assinado, lido.retInutNFe), {
-		contentType: "application/xml",
-		meta: { tipo: "inutilizacao", serie: input.serie, numeroInicial: input.numeroInicial, numeroFinal: input.numeroFinal, protocolo: lido.protocolo, diario: journalKey ?? null },
-	});
+	// "duplicada": a SEFAZ já tinha esta faixa inutilizada (um pedido anterior chegou
+	// e a resposta se perdeu). Fica registrada sem o protocolo e sem o XML.
+	const homologada = lido.tipo === "homologada" ? lido : null;
+	const destino = homologada ? `${input.modelo}/${input.ambiente}/inutilizacoes/${pedido.id}.xml` : null;
+	if (homologada && destino) {
+		await ops.putDocument(destino, procInutNFe(assinado, homologada.retInutNFe), {
+			contentType: "application/xml",
+			meta: { tipo: "inutilizacao", serie: input.serie, numeroInicial: input.numeroInicial, numeroFinal: input.numeroFinal, protocolo: homologada.protocolo, diario: journalKey ?? null },
+		});
+	}
 	const inutilizacao: banco.Inutilizacao = {
 		...serieKey, id: banco.newId("inu"), firstNumber: input.numeroInicial, lastNumber: input.numeroFinal,
-		protocol: lido.protocolo, justification: input.justificativa, documentKey: destino, createdAt: Date.now(),
+		protocol: homologada?.protocolo ?? null, justification: input.justificativa, documentKey: destino, createdAt: Date.now(),
 	};
 	await banco.insertInutilizacao(d1, inutilizacao);
 	// Se a faixa começa no próximo número da série (ou antes), a série segue depois dela.
 	const serie = await banco.getSerie(d1, serieKey);
 	if (serie && input.numeroInicial <= serie.lastNumber + 1) await banco.avancarSerie(d1, serieKey, input.numeroFinal);
-	return { ok: true, inutilizacao };
+	return { ok: true, inutilizacao, repetida: !homologada };
 }
 
 /** Consulta o status do serviço de autorização da UF. */

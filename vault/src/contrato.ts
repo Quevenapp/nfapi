@@ -35,8 +35,11 @@ const ERROS: Record<number, string> = {
 	409: "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
 	422: "Recusado pelo governo ou barrado pelo cofre antes de transmitir. Com rejeição, o corpo traz a emissão e as mensagens (cStat e xMotivo).",
 	502: "Sem resposta conclusiva do governo. Repita o pedido com a mesma referência: o cofre consulta antes de reenviar.",
+	500: "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+	503: "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
 };
-const erros = (...codigos: number[]) => Object.fromEntries(codigos.map((c) => [String(c), resposta(ERROS[c] as string, ref("Erro"))]));
+/** Toda operação pode devolver 500 e 503, além dos erros próprios dela. */
+const erros = (...codigos: number[]) => Object.fromEntries([...codigos, 500, 503].map((c) => [String(c), resposta(ERROS[c] as string, ref("Erro"))]));
 
 const texto = { type: "string" };
 const textoOuNulo = { type: ["string", "null"] };
@@ -146,6 +149,7 @@ const filtros = [
 	{ name: "limite", in: "query", schema: { type: "integer", default: 50, maximum: 200 } },
 ];
 const xml = { description: "XML autorizado.", content: { "application/xml": { schema: texto } } };
+const xmlDoEvento = { description: "XML do evento com o retorno do governo, como deve ser guardado e entregue.", content: { "application/xml": { schema: texto } } };
 
 /** Resposta de cancelamento e de carta de correção: a emissão e se o pedido era repetido. */
 const comRepetido = (emissao: Json) => ({
@@ -251,7 +255,18 @@ function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: un
 			},
 		},
 	};
+	rotas[`${base}/{id}/cancelamento/xml`] = {
+		get: { tags, summary: "Baixa o XML do evento de cancelamento (procEventoNFe)", parameters: [id], responses: { "200": xmlDoEvento, ...erros(401, 404) } },
+	};
 	if (doc === "nfe") {
+		rotas[`${base}/{id}/carta-correcao/{sequencia}/xml`] = {
+			get: {
+				tags,
+				summary: "Baixa o XML de uma carta de correção (procEventoNFe)",
+				parameters: [id, { name: "sequencia", in: "path", required: true, schema: { type: "integer", minimum: 1, maximum: 20 }, description: "Número da carta, de 1 até `cartasCorrecao`." }],
+				responses: { "200": xmlDoEvento, ...erros(401, 404) },
+			},
+		};
 		rotas[`${base}/{id}/carta-correcao`] = {
 			post: {
 				tags,
@@ -297,6 +312,9 @@ export function contratoOpenApi(): Json {
 			},
 			"/v1/nfse/{id}": { get: { tags: ["NFS-e"], summary: "Consulta a emissão", parameters: [id], responses: { "200": resposta("A emissão.", nfse), ...erros(401, 404) } } },
 			"/v1/nfse/{id}/xml": { get: { tags: ["NFS-e"], summary: "Baixa o XML da NFS-e", parameters: [id], responses: { "200": xml, ...erros(401, 404) } } },
+			"/v1/nfse/{id}/cancelamento/xml": {
+				get: { tags: ["NFS-e"], summary: "Baixa o XML do evento de cancelamento", parameters: [id], responses: { "200": xmlDoEvento, ...erros(401, 404) } },
+			},
 			"/v1/nfse/{id}/cancelar": {
 				post: {
 					tags: ["NFS-e"],
@@ -312,8 +330,29 @@ export function contratoOpenApi(): Json {
 					summary: "Inutiliza uma faixa de numeração de NF-e ou NFC-e",
 					description: "Para números que não serão usados (lacunas). A faixa não pode conter nota autorizada ou em andamento neste cofre. Em SP, AC e BA a inutilização foi extinta: o cofre responde 422 inutilizacao_extinta.",
 					requestBody: corpo(ref("Inutilizacao"), { modelo: "nfe", ambiente: "homologacao", uf: "RJ", serie: 1, numeroInicial: 15, numeroFinal: 15, justificativa: "Número pulado por falha no sistema anterior" }),
-					responses: { "201": resposta("Homologada pela SEFAZ.", ref("InutilizacaoRegistrada")), ...erros(400, 401, 403, 409, 422, 502) },
+					responses: {
+						"201": resposta("Homologada pela SEFAZ.", ref("InutilizacaoRegistrada")),
+						"200": resposta("A faixa já estava inutilizada (`repetido`): repetir o pedido é seguro.", ref("InutilizacaoRegistrada")),
+						...erros(400, 401, 403, 409, 422, 502),
+					},
 				},
+				get: {
+					tags: ["Numeração"],
+					summary: "Lista as inutilizações registradas por este cofre",
+					description: "Serve para conferir uma inutilização cuja resposta se perdeu. Se a faixa não estiver na lista, repita o POST: o cofre e a SEFAZ reconhecem a faixa já inutilizada.",
+					parameters: [
+						{ name: "modelo", in: "query", schema: { type: "string", enum: ["nfe", "nfce"] } },
+						{ name: "ambiente", in: "query", schema: AMBIENTE },
+						{ name: "serie", in: "query", schema: { type: "integer" } },
+					],
+					responses: { "200": resposta("Inutilizações, da mais nova para a mais antiga.", { type: "object", properties: { inutilizacoes: { type: "array", items: ref("InutilizacaoRegistrada") } } }), ...erros(400, 401) },
+				},
+			},
+			"/v1/inutilizacoes/{id}": {
+				get: { tags: ["Numeração"], summary: "Consulta uma inutilização", parameters: [{ ...id, description: "Id da inutilização no cofre." }], responses: { "200": resposta("A inutilização.", ref("InutilizacaoRegistrada")), ...erros(401, 404) } },
+			},
+			"/v1/inutilizacoes/{id}/xml": {
+				get: { tags: ["Numeração"], summary: "Baixa o XML da inutilização (ProcInutNFe)", parameters: [{ ...id, description: "Id da inutilização no cofre." }], responses: { "200": xmlDoEvento, ...erros(401, 404) } },
 			},
 			"/v1/series": {
 				get: {
@@ -384,7 +423,19 @@ export function contratoOpenApi(): Json {
 				EmissaoNfse,
 				InutilizacaoRegistrada: {
 					type: "object",
-					properties: { id: texto, modelo: texto, ambiente: AMBIENTE, serie: { type: "integer" }, numeroInicial: { type: "integer" }, numeroFinal: { type: "integer" }, protocolo: textoOuNulo, criadaEm: dataHora },
+					properties: {
+						id: texto,
+						modelo: texto,
+						ambiente: AMBIENTE,
+						serie: { type: "integer" },
+						numeroInicial: { type: "integer" },
+						numeroFinal: { type: "integer" },
+						protocolo: { ...textoOuNulo, description: "Nulo quando a SEFAZ só confirmou que a faixa já estava inutilizada." },
+						justificativa: texto,
+						xmlDisponivel: { type: "boolean" },
+						criadaEm: dataHora,
+						repetido: { type: "boolean", description: "Só na resposta do POST: a faixa já estava inutilizada." },
+					},
 				},
 				Serie: {
 					type: "object",

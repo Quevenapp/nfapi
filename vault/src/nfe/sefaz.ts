@@ -206,6 +206,8 @@ export function lerRespostaEventoNfe(status: number, corpo: string): RespostaEve
 
 export type RespostaInutilizacao =
 	| { tipo: "homologada"; protocolo: string | null; mensagem: Mensagem; retInutNFe: string }
+	/** A SEFAZ já tem um pedido com a mesma faixa (cStat 563): repetir não é erro. */
+	| { tipo: "duplicada"; mensagem: Mensagem }
 	| { tipo: "rejeitada"; mensagem: Mensagem }
 	| { tipo: "indefinida"; detalhe: string };
 
@@ -218,6 +220,7 @@ export function lerRespostaInutilizacao(status: number, corpo: string): Resposta
 	if (campo(inf, "cStat") === "102") {
 		return { tipo: "homologada", protocolo: campo(inf, "nProt") ?? null, mensagem: mensagem(inf), retInutNFe: serializar(ret) };
 	}
+	if (campo(inf, "cStat") === "563") return { tipo: "duplicada", mensagem: mensagem(inf) };
 	return { tipo: "rejeitada", mensagem: mensagem(inf) };
 }
 

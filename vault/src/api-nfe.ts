@@ -92,6 +92,19 @@ export const nfeJson = (e: banco.Emission) => ({
 	atualizadaEm: iso(e.updatedAt),
 });
 
+const inutilizacaoJson = (i: banco.Inutilizacao) => ({
+	id: i.id,
+	modelo: i.kind,
+	ambiente: i.environment,
+	serie: Number(i.serie),
+	numeroInicial: i.firstNumber,
+	numeroFinal: i.lastNumber,
+	protocolo: i.protocol,
+	justificativa: i.justification,
+	xmlDisponivel: i.documentKey !== null,
+	criadaEm: iso(i.createdAt),
+});
+
 const serieJson = (s: banco.Serie) => ({
 	modelo: s.kind,
 	ambiente: s.environment,
@@ -214,6 +227,24 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 			});
 		evento("cancelar", CancelamentoNfe, cancelarNfe);
 		if (doc === "nfe") evento("carta-correcao", CartaCorrecao, corrigirNfe);
+
+		/** XML de um evento arquivado ao lado da nota (procEventoNFe). */
+		const xmlDoEvento = async (c: C, sufixo: string) => {
+			const chave = await autenticar(c);
+			if (chave instanceof Response) return chave;
+			const emission = await buscar(c);
+			const object = emission?.documentKey ? await store.getDocument(c.env.DOCS, emission.documentKey.replace(/-nfe\.xml$/, `-${sufixo}.xml`)) : null;
+			if (!object) return erro(c, 404, "nao_encontrado", "Este evento não está arquivado no cofre.");
+			return c.body(object.body, 200, { "content-type": "application/xml; charset=utf-8" });
+		};
+		app.get(`${base}/:id/cancelamento/xml`, (c) => xmlDoEvento(c, "cancelamento"));
+		if (doc === "nfe") {
+			app.get(`${base}/:id/carta-correcao/:sequencia/xml`, async (c) => {
+				const sequencia = Number(c.req.param("sequencia"));
+				if (!Number.isInteger(sequencia) || sequencia < 1 || sequencia > 20) return erro(c, 404, "nao_encontrado", "Carta de correção inexistente.");
+				return xmlDoEvento(c, `cce-${String(sequencia).padStart(2, "0")}`);
+			});
+		}
 	}
 
 	app.post("/v1/inutilizacoes", async (c) => {
@@ -226,11 +257,38 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 		if (ops instanceof Response) return ops;
 		const r = await inutilizarNumeracao(c.env.DB, ops, input.data);
 		if (!r.ok) return erro(c, r.status, r.codigo, r.mensagem, { mensagens: r.mensagens });
-		const i = r.inutilizacao;
-		return c.json(
-			{ id: i.id, modelo: i.kind, ambiente: i.environment, serie: Number(i.serie), numeroInicial: i.firstNumber, numeroFinal: i.lastNumber, protocolo: i.protocol, criadaEm: iso(i.createdAt) },
-			201,
+		// 200 quando a faixa já estava inutilizada (repetir o pedido é seguro).
+		const corpo = { ...inutilizacaoJson(r.inutilizacao), repetido: r.repetida };
+		return r.repetida ? c.json(corpo, 200) : c.json(corpo, 201);
+	});
+
+	app.get("/v1/inutilizacoes", async (c) => {
+		const chave = await autenticar(c);
+		if (chave instanceof Response) return chave;
+		const ambiente = ambienteDoFiltro(c);
+		if (ambiente === null) return erro(c, 400, "requisicao_invalida", 'O filtro "ambiente" aceita homologacao ou producao.');
+		const modelo = c.req.query("modelo");
+		const serie = c.req.query("serie");
+		const lista = (await banco.listInutilizacoes(c.env.DB)).filter(
+			(i) => (!ambiente || i.environment === ambiente) && (!modelo || i.kind === modelo) && (!serie || i.serie === String(Number(serie))),
 		);
+		return c.json({ inutilizacoes: lista.map(inutilizacaoJson) });
+	});
+
+	app.get("/v1/inutilizacoes/:id", async (c) => {
+		const chave = await autenticar(c);
+		if (chave instanceof Response) return chave;
+		const i = await banco.getInutilizacao(c.env.DB, c.req.param("id"));
+		return i ? c.json(inutilizacaoJson(i)) : erro(c, 404, "nao_encontrado", "Inutilização inexistente.");
+	});
+
+	app.get("/v1/inutilizacoes/:id/xml", async (c) => {
+		const chave = await autenticar(c);
+		if (chave instanceof Response) return chave;
+		const i = await banco.getInutilizacao(c.env.DB, c.req.param("id"));
+		const object = i?.documentKey ? await store.getDocument(c.env.DOCS, i.documentKey) : null;
+		if (!object) return erro(c, 404, "nao_encontrado", "XML indisponível para esta inutilização.");
+		return c.body(object.body, 200, { "content-type": "application/xml; charset=utf-8" });
 	});
 
 	app.get("/v1/series", async (c) => {

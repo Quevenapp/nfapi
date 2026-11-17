@@ -161,6 +161,16 @@ export function registrarApiNfse(app: Hono<Ctx>, makeTransport: (env: AppEnv) =>
 		return c.body(object.body, 200, { "content-type": "application/xml; charset=utf-8" });
 	});
 
+	// XML do evento de cancelamento registrado na SEFIN.
+	app.get("/v1/nfse/:id/cancelamento/xml", async (c) => {
+		const chave = await autenticar(c);
+		if (chave instanceof Response) return chave;
+		const emission = await buscar(c);
+		const object = emission?.documentKey ? await store.getDocument(c.env.DOCS, emission.documentKey.replace(/-nfse\.xml$/, "-cancelamento.xml")) : null;
+		if (!object) return erro(c, 404, "nao_encontrado", "Este evento não está arquivado no cofre.");
+		return c.body(object.body, 200, { "content-type": "application/xml; charset=utf-8" });
+	});
+
 	app.post("/v1/nfse/:id/cancelar", async (c) => {
 		const chave = await autenticar(c);
 		if (chave instanceof Response) return chave;

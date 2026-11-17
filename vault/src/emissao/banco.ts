@@ -381,6 +381,42 @@ export async function insertInutilizacao(db: D1Database, i: Inutilizacao): Promi
 		.run();
 }
 
+const toInutilizacao = (r: Row): Inutilizacao => ({
+	id: r.id as string,
+	docId: r.doc_id as string,
+	kind: r.kind as Kind,
+	environment: r.environment as Ambiente,
+	serie: r.serie as string,
+	firstNumber: r.first_number as number,
+	lastNumber: r.last_number as number,
+	protocol: (r.protocol as string | null) ?? null,
+	justification: r.justification as string,
+	documentKey: (r.document_key as string | null) ?? null,
+	createdAt: r.created_at as number,
+});
+
+export async function listInutilizacoes(db: D1Database, limit = 200): Promise<Inutilizacao[]> {
+	const { results } = await db.prepare("SELECT * FROM inutilizacoes ORDER BY created_at DESC, rowid DESC LIMIT ?").bind(limit).all<Row>();
+	return results.map(toInutilizacao);
+}
+
+export async function getInutilizacao(db: D1Database, id: string): Promise<Inutilizacao | null> {
+	const row = await db.prepare("SELECT * FROM inutilizacoes WHERE id = ?").bind(id).first<Row>();
+	return row ? toInutilizacao(row) : null;
+}
+
+/** A inutilização exatamente desta faixa, se o cofre já a registrou. */
+export async function findInutilizacao(db: D1Database, k: SerieKey, de: number, ate: number): Promise<Inutilizacao | null> {
+	const row = await db
+		.prepare(
+			`SELECT * FROM inutilizacoes WHERE doc_id = ? AND kind = ? AND environment = ? AND serie = ?
+			 AND first_number = ? AND last_number = ?`,
+		)
+		.bind(k.docId, k.kind, k.environment, k.serie, de, ate)
+		.first<Row>();
+	return row ? toInutilizacao(row) : null;
+}
+
 /** Se o número caiu numa faixa inutilizada, devolve o fim dela; senão, null. */
 export async function fimDaFaixaInutilizada(db: D1Database, k: SerieKey, number: number): Promise<number | null> {
 	const row = await db

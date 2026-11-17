@@ -276,6 +276,13 @@ describe("NF-e pelo cofre", () => {
 		expect(await documentos()).toEqual([`${nota.chaveAcesso}-cancelamento.xml`, `${nota.chaveAcesso}-cce-01.xml`, `${nota.chaveAcesso}-cce-02.xml`, `${nota.chaveAcesso}-nfe.xml`]);
 		const painel = (await admin("GET", "/admin/notas")).json.notas[0];
 		expect(painel.situacao).toBe("cancelada");
+
+		// Os XML dos eventos saem pela API, para o sistema guardar e entregar.
+		const xmlCancelamento = await cliente("GET", `/v1/nfe/${nota.id}/cancelamento/xml`);
+		expect(xmlCancelamento.text).toMatch(/^<procEventoNFe xmlns="http:\/\/www\.portalfiscal\.inf\.br\/nfe" versao="1\.00"><evento /);
+		expect(xmlCancelamento.text).toContain("<nProt>135260000000888</nProt>");
+		expect((await cliente("GET", `/v1/nfe/${nota.id}/carta-correcao/2/xml`)).text).toContain(`Id="ID110110${nota.chaveAcesso}02"`);
+		expect((await cliente("GET", `/v1/nfe/${nota.id}/carta-correcao/3/xml`)).status).toBe(404);
 		expect((await cliente("POST", `/v1/nfe/${nota.id}/carta-correcao`, { correcao: "Tentativa depois do cancelamento" })).status).toBe(409);
 	});
 
@@ -402,6 +409,27 @@ describe("séries, inutilização e estado do cofre", () => {
 		const emUso = await cliente("POST", "/v1/inutilizacoes", { ...pedido, numeroInicial: 8, numeroFinal: 8 });
 		expect(emUso.status).toBe(409);
 		expect(emUso.json.erro.codigo).toBe("faixa_em_uso");
+
+		// Repetir a mesma faixa devolve o registro, sem chamar a SEFAZ de novo.
+		sefaz.chamadas = [];
+		const repetida = await cliente("POST", "/v1/inutilizacoes", pedido);
+		expect(repetida.status).toBe(200);
+		expect(repetida.json).toMatchObject({ id: res.json.id, repetido: true });
+		expect(sefaz.chamadas).toHaveLength(0);
+
+		// A resposta se perdeu e a SEFAZ já tinha a faixa (cStat 563): fica registrada sem protocolo.
+		respostas.inutilizacao = () => soap(`<retInutNFe ${NS} versao="4.00"><infInut><cStat>563</cStat><xMotivo>Rejeicao: Ja existe pedido de Inutilizacao com a mesma faixa de inutilizacao</xMotivo></infInut></retInutNFe>`);
+		const jaNaSefaz = await cliente("POST", "/v1/inutilizacoes", { ...pedido, numeroInicial: 20, numeroFinal: 21 });
+		expect(jaNaSefaz.status).toBe(200);
+		expect(jaNaSefaz.json).toMatchObject({ repetido: true, protocolo: null, xmlDisponivel: false });
+
+		// Consulta e XML das inutilizações.
+		const lista = (await cliente("GET", "/v1/inutilizacoes?modelo=nfe&serie=1&ambiente=homologacao")).json.inutilizacoes as Json[];
+		expect(lista.map((i) => [i.numeroInicial, i.numeroFinal])).toEqual([[20, 21], [9, 10], [5, 7]]);
+		expect((await cliente("GET", "/v1/inutilizacoes?ambiente=producao")).json.inutilizacoes).toHaveLength(0);
+		expect((await cliente("GET", `/v1/inutilizacoes/${res.json.id}`)).json).toMatchObject({ numeroInicial: 5, protocolo: "135260000000999", xmlDisponivel: true });
+		expect((await cliente("GET", `/v1/inutilizacoes/${res.json.id}/xml`)).text).toMatch(/^<ProcInutNFe /);
+		expect((await cliente("GET", `/v1/inutilizacoes/${jaNaSefaz.json.id}/xml`)).status).toBe(404);
 	});
 
 	it("em SP a inutilização foi extinta: o cofre explica e não chama a SEFAZ", async () => {
