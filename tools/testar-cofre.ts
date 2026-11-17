@@ -25,9 +25,18 @@ function sair(mensagem: string, codigo = 1): never {
 }
 
 const args = process.argv.slice(2);
-const [endereco, arquivoNfe, arquivoNfce] = args.filter((a) => !a.startsWith("--"));
-if (!endereco || !arquivoNfe || !fs.existsSync(arquivoNfe) || (arquivoNfce && !fs.existsSync(arquivoNfce))) {
-	sair("Uso: pnpm testar-cofre <https://endereco-do-cofre> <pedido-nfe.json> [<pedido-nfce.json>] [--sim]", 2);
+/** --contingencia: testa só a fila de contingência da NFC-e; o pedido informado é o de NFC-e. */
+const soContingencia = args.includes("--contingencia");
+const posicionais = args.filter((a) => !a.startsWith("--"));
+const endereco = posicionais[0];
+const arquivoNfe = soContingencia ? undefined : posicionais[1];
+const arquivoNfce = soContingencia ? posicionais[1] : posicionais[2];
+if (!endereco || (!soContingencia && (!arquivoNfe || !fs.existsSync(arquivoNfe))) || (soContingencia && !arquivoNfce) || (arquivoNfce && !fs.existsSync(arquivoNfce))) {
+	sair(
+		"Uso: pnpm testar-cofre <https://endereco-do-cofre> <pedido-nfe.json> [<pedido-nfce.json>] [--sim]\n" +
+			"     pnpm testar-cofre <https://endereco-do-cofre> <pedido-nfce.json> --contingencia [--sim]",
+		2,
+	);
 }
 let base: URL;
 try {
@@ -105,19 +114,22 @@ registrar("Estado do cofre", estado.certificado !== null, `versão ${estado.vers
 
 const series = ((await api("GET", "/v1/series")).json?.series ?? []) as Json[];
 const serieDe = (modelo: string) => series.filter((s) => s.modelo === modelo && s.ambiente === "homologacao");
-for (const modelo of arquivoNfce ? ["nfe", "nfce"] : ["nfe"]) {
+for (const modelo of soContingencia ? ["nfce"] : arquivoNfce ? ["nfe", "nfce"] : ["nfe"]) {
 	const lista = serieDe(modelo);
 	registrar(`Série de ${modelo} em homologação`, lista.length > 0, lista.length ? lista.map((s) => `série ${s.serie}, próxima nota ${s.proximoNumero}`).join("; ") : "nenhuma cadastrada no painel do cofre");
 }
 
-const pedidoNfe = lerPedido(arquivoNfe);
-const uf = pedidoNfe.emitente?.endereco?.uf ?? "SP";
-const status = await api("GET", `/v1/sefaz/status?uf=${uf}&modelo=nfe`);
+const pedidoNfe = arquivoNfe ? lerPedido(arquivoNfe) : null;
+const uf = (pedidoNfe ?? lerPedido(arquivoNfce as string)).emitente?.endereco?.uf ?? "SP";
+const status = await api("GET", `/v1/sefaz/status?uf=${uf}&modelo=${soContingencia ? "nfce" : "nfe"}`);
 registrar("Conexão do cofre com a SEFAZ", status.json?.emOperacao === true, status.json?.mensagem ? `[${status.json.mensagem.codigo}] ${status.json.mensagem.descricao} (${status.ms} ms)` : motivo(status));
 
 if (passos.some(([, ok]) => !ok)) sair("\nCorrija os itens acima antes de emitir.");
 if (!args.includes("--sim")) {
-	const resposta = await perguntar(`\nEmitir e cancelar ${arquivoNfce ? "uma NF-e e uma NFC-e" : "uma NF-e"} de teste em HOMOLOGAÇÃO por este cofre? [s/N] `);
+	const oQue = soContingencia
+		? "uma NFC-e em CONTINGÊNCIA (o teste espera até 8 minutos o cofre transmiti-la sozinho)"
+		: arquivoNfce ? "uma NF-e e uma NFC-e" : "uma NF-e";
+	const resposta = await perguntar(`\nEmitir e cancelar ${oQue} de teste em HOMOLOGAÇÃO por este cofre? [s/N] `);
 	if (resposta.trim().toLowerCase() !== "s") sair("Cancelado: nada foi emitido.", 0);
 }
 
@@ -156,8 +168,54 @@ async function exercitar(doc: "nfe" | "nfce", pedido: Json) {
 	registrar(`${nome}: cancelamento`, cancelada.status === 200 && cancelada.json?.situacao === "cancelada" && cancelada.json?.repetido === false, cancelada.status === 200 ? `cancelada (${cancelada.ms} ms)` : motivo(cancelada));
 }
 
-await exercitar("nfe", pedidoNfe);
-if (arquivoNfce) await exercitar("nfce", lerPedido(arquivoNfce));
+/**
+ * Fila de contingência: emite uma NFC-e em contingência (forçada) e espera o
+ * agendador do cofre, que roda a cada 5 minutos, transmiti-la sem ajuda.
+ */
+async function exercitarContingencia(pedido: Json) {
+	console.log("\nNFC-e em contingência");
+	const emitida = await api("POST", "/v1/nfce", { ...pedido, ambiente: "homologacao", referencia: `teste-contingencia-${corrida}`, contingencia: "forcada" });
+	const nota = emitida.json ?? {};
+	const offline = typeof nota.qrCode === "string" && nota.qrCode.split("|").length === 8;
+	if (!registrar("Emissão em contingência", emitida.status === 201 && nota.situacao === "contingencia" && nota.chaveAcesso?.[34] === "9" && offline && nota.protocolo === null,
+		emitida.status === 201 ? `nº ${nota.numero}, série ${nota.serie}, situação ${nota.situacao}, sem protocolo (${emitida.ms} ms)` : motivo(emitida))) return;
+	console.log(`          chave ${nota.chaveAcesso}`);
+
+	const pendentes = (await api("GET", "/v1/cofre")).json?.contingencia?.notasPendentes;
+	registrar("Nota na fila do cofre", pendentes >= 1, `${pendentes} nota(s) pendente(s)`);
+	const xmlAntes = await api("GET", `/v1/nfce/${nota.id}/xml`);
+	registrar("XML assinado disponível antes da autorização", xmlAntes.status === 200 && xmlAntes.texto.startsWith("<NFe") && xmlAntes.texto.includes("<tpEmis>9</tpEmis>"), xmlAntes.status === 200 ? `${xmlAntes.texto.length} caracteres` : motivo(xmlAntes));
+
+	console.log("  Aguardando o agendador do cofre transmitir a nota (até 8 minutos)...");
+	const inicio = Date.now();
+	let atual = nota;
+	while (atual.situacao === "contingencia" && Date.now() - inicio < 8 * 60_000) {
+		await new Promise((resolve) => setTimeout(resolve, 30_000));
+		atual = (await api("GET", `/v1/nfce/${nota.id}`)).json ?? atual;
+		process.stdout.write(`    ${Math.round((Date.now() - inicio) / 1000)} s: ${atual.situacao}\n`);
+	}
+	const sozinho = registrar("Transmissão automática pelo agendador", atual.situacao === "autorizada" && atual.chaveAcesso === nota.chaveAcesso,
+		atual.situacao === "autorizada" ? `autorizada em ${Math.round((Date.now() - inicio) / 1000)} s, protocolo ${atual.protocolo}` : `continua ${atual.situacao}: ${JSON.stringify(atual.mensagens)}`);
+	if (!sozinho && atual.situacao === "contingencia") {
+		// O agendador não agiu: tenta transmitir pela API, para o teste não deixar nota pendente.
+		atual = (await api("POST", `/v1/nfce/${nota.id}/consultar`)).json ?? atual;
+		registrar("Transmissão pedida pela API (/consultar)", atual.situacao === "autorizada", `situação ${atual.situacao}`);
+	}
+	if (atual.situacao !== "autorizada") return;
+
+	const xml = await api("GET", `/v1/nfce/${nota.id}/xml`);
+	registrar("XML com o protocolo depois da autorização", xml.status === 200 && xml.texto.startsWith("<nfeProc") && xml.texto.includes(`<nProt>${atual.protocolo}</nProt>`), xml.status === 200 ? `${xml.texto.length} caracteres` : motivo(xml));
+	const cancelada = await api("POST", `/v1/nfce/${nota.id}/cancelar`, { justificativa });
+	registrar("Cancelamento", cancelada.status === 200 && cancelada.json?.situacao === "cancelada", cancelada.status === 200 ? "cancelada" : motivo(cancelada));
+	const evento = await api("GET", `/v1/nfce/${nota.id}/cancelamento/xml`);
+	registrar("XML do evento de cancelamento", evento.status === 200 && evento.texto.startsWith("<procEventoNFe"), evento.status === 200 ? `${evento.texto.length} caracteres` : motivo(evento));
+}
+
+if (soContingencia) await exercitarContingencia(lerPedido(arquivoNfce as string));
+else {
+	await exercitar("nfe", pedidoNfe as Json);
+	if (arquivoNfce) await exercitar("nfce", lerPedido(arquivoNfce));
+}
 
 const falhas = passos.filter(([, ok]) => !ok);
 console.log(`\nResultado: ${passos.length - falhas.length} de ${passos.length} passos certos.${falhas.length ? ` Falharam: ${falhas.map(([nome]) => nome).join("; ")}.` : ""}`);
