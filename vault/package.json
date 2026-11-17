@@ -1,6 +1,6 @@
 {
   "name": "nfapi-cofre",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Cofre NFapi: API de emissão de notas fiscais que roda na conta Cloudflare do emitente. Guarda o certificado A1, monta e assina os documentos, transmite com mTLS e arquiva os XML.",
@@ -26,6 +26,8 @@
     "@xmldom/xmldom": "^0.9.12",
     "hono": "^4.13.18",
     "node-forge": "^1.4.3",
+    "pdf-lib": "1.17.1",
+    "qrcode-generator": "2.0.4",
     "xml-crypto": "^6.4.0",
     "zod": "^4.6.7"
   },

@@ -2,7 +2,7 @@
 	"openapi": "3.1.0",
 	"info": {
 		"title": "Cofre NFapi",
-		"version": "0.7.0",
+		"version": "0.8.0",
 		"description": "API de emissão de notas fiscais do cofre NFapi, que roda na conta Cloudflare do emitente. Todas as chamadas levam uma chave de API criada na tela /setup do cofre. O cofre não calcula imposto: o sistema que chama informa bases, alíquotas e valores; o cofre numera, monta o XML, soma os totais, assina, transmite e arquiva. Erros vêm sempre como `{ \"erro\": { \"codigo\", \"mensagem\" } }`.",
 		"license": {
 			"name": "MIT"
@@ -780,6 +780,89 @@
 					},
 					"404": {
 						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfe/{id}/danfe": {
+			"get": {
+				"tags": [
+					"NF-e"
+				],
+				"summary": "DANFE em PDF (A4)",
+				"description": "Montado a partir do XML arquivado, com os quadros do DANFE: canhoto, emitente, chave de acesso com código de barras, destinatário, fatura e duplicatas, cálculo do imposto, transportador, itens e dados adicionais. Os itens que não cabem na primeira folha continuam nas seguintes. A nota cancelada sai com a marca CANCELADA, e a de homologação, com SEM VALOR FISCAL. Os totais de IBS, CBS e Imposto Seletivo saem nas informações complementares, porque o leiaute do DANFE ainda não tem campos para eles. Leva o logotipo cadastrado no cofre, quando há. O PDF é gerado a cada pedido.",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da emissão no cofre."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "O DANFE.",
+						"content": {
+							"application/pdf": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1785,6 +1868,125 @@
 							"application/json": {
 								"schema": {
 									"$ref": "#/components/schemas/Cupom"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Pedido inválido. `erro.mensagem` aponta o campo.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "Conflito: referência em andamento, referência reenviada com outro conteúdo, certificado ausente ou nota em situação que não permite a operação.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/nfce/{id}/danfce": {
+			"get": {
+				"tags": [
+					"NFC-e"
+				],
+				"summary": "DANFE NFC-e em PDF, na largura da bobina",
+				"description": "O mesmo conteúdo do cupom em JSON, já diagramado, para o caixa que não monta a impressão por conta própria. A página tem um ponto do PDF por ponto da impressora térmica (8 por milímetro): 576 de largura na bobina de 80 mm e 384 na de 58 mm, com a altura que o conteúdo pedir. Convertido em imagem nessa mesma largura, o QR Code sai com módulos inteiros, em preto puro. Para imprimir pelo driver da impressora, ajuste à largura do papel. Leva o logotipo cadastrado no cofre, quando há. O PDF é gerado a cada pedido.",
+				"parameters": [
+					{
+						"name": "id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "Id da emissão no cofre."
+					},
+					{
+						"name": "largura",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": [
+								"80",
+								"58"
+							],
+							"default": "80"
+						},
+						"description": "Largura da bobina, em milímetros."
+					},
+					{
+						"name": "via",
+						"in": "query",
+						"schema": {
+							"type": "string",
+							"enum": [
+								"consumidor",
+								"estabelecimento"
+							],
+							"default": "consumidor"
+						},
+						"description": "A via do estabelecimento só existe na nota em contingência."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "O DANFE NFC-e.",
+						"content": {
+							"application/pdf": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
 								}
 							}
 						}
@@ -2935,6 +3137,74 @@
 				}
 			}
 		},
+		"/v1/cofre/logotipo": {
+			"get": {
+				"tags": [
+					"Cofre"
+				],
+				"summary": "Logotipo do emitente",
+				"description": "A imagem que o emitente cadastrou na tela do cofre, para o sistema do caixa imprimir no cupom. Os PDFs do cofre já a incluem.",
+				"responses": {
+					"200": {
+						"description": "A imagem, em PNG ou JPEG.",
+						"content": {
+							"image/png": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							},
+							"image/jpeg": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Chave de API ausente, inválida ou revogada.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Emissão inexistente.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Falha inesperada do cofre (erro_interno). Pode ser repetido; com referência, a repetição é segura.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "O cofre não está pronto para atender (cofre_nao_configurado): a instalação não foi concluída.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Erro"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/v1/sefaz/status": {
 			"get": {
 				"tags": [
@@ -3133,7 +3403,7 @@
 									},
 									"nfe_nao_autorizada": {
 										"status": 409,
-										"quando": "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada, ou cupom de NFC-e sem XML arquivado."
+										"quando": "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada, ou pedido de cupom, DANFE ou DANFE NFC-e de nota sem XML arquivado."
 									},
 									"nfse_nao_autorizada": {
 										"status": 409,
@@ -8868,6 +9138,10 @@
 								"description": "NFC-e emitidas em contingência que ainda aguardam a transmissão à SEFAZ."
 							}
 						}
+					},
+					"logotipo": {
+						"type": "boolean",
+						"description": "Há logotipo cadastrado no cofre. A imagem sai em GET /v1/cofre/logotipo."
 					},
 					"chave": {
 						"type": "object",

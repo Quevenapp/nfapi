@@ -121,6 +121,20 @@ export const SETUP_HTML = String.raw`<!doctype html>
 		</section>
 
 		<section class="card">
+			<h2>Logotipo</h2>
+			<p>Sai no DANFE da NF-e e no DANFE NFC-e que o cofre gera em PDF. Envie uma imagem PNG ou JPEG de até 300 KB.</p>
+			<p id="logo-empty" class="muted" hidden>Nenhum logotipo cadastrado: os documentos saem sem imagem.</p>
+			<img id="logo-preview" class="logo" alt="Logotipo cadastrado" hidden>
+			<form id="logo-form">
+				<label for="logo-file">Imagem</label>
+				<input id="logo-file" type="file" accept="image/png,image/jpeg" required>
+				<button type="submit">Enviar logotipo</button>
+				<button type="button" id="logo-remove" class="ghost danger" hidden>Remover logotipo</button>
+			</form>
+			<p id="logo-message" role="status"></p>
+		</section>
+
+		<section class="card">
 			<h2>4. Ambiente</h2>
 			<p id="env-status"></p>
 			<button type="button" id="env-toggle" class="ghost"></button>
@@ -224,6 +238,7 @@ a { color: var(--accent); }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
+.logo { display: block; max-width: 220px; max-height: 120px; margin: 12px 0; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
 .results { list-style: none; margin: 14px 0 0; padding: 0; }
 .results li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .results li button { margin-top: 0; padding: 6px 12px; }
@@ -266,7 +281,11 @@ export const SETUP_JS = String.raw`(function () {
 	async function api(method, path, body) {
 		var init = { method: method, headers: { authorization: "Bearer " + secret } };
 		if (body instanceof FormData) init.body = body;
-		else if (body !== undefined) {
+		else if (body instanceof Blob) {
+			// Arquivo enviado como está (o logotipo).
+			init.headers["content-type"] = body.type || "application/octet-stream";
+			init.body = body;
+		} else if (body !== undefined) {
 			init.headers["content-type"] = "application/json";
 			init.body = JSON.stringify(body);
 		}
@@ -372,13 +391,15 @@ export const SETUP_JS = String.raw`(function () {
 	};
 	var NOMES = { nfse: "NFS-e", nfe: "NF-e", nfce: "NFC-e" };
 
-	async function baixar(arquivo) {
-		var res = await fetch("/admin/notas/arquivo?key=" + encodeURIComponent(arquivo.key), {
-			headers: { authorization: "Bearer " + secret }
-		});
+	// Baixa o arquivo da nota ou, com "pdf", o DANFE (NF-e) ou DANFE NFC-e gerado a partir dele.
+	async function baixar(arquivo, pdf, cancelada) {
+		var caminho = pdf
+			? "/admin/notas/pdf?key=" + encodeURIComponent(arquivo.key) + (cancelada ? "&cancelada=1" : "")
+			: "/admin/notas/arquivo?key=" + encodeURIComponent(arquivo.key);
+		var res = await fetch(caminho, { headers: { authorization: "Bearer " + secret } });
 		if (!res.ok) throw new Error("Não foi possível baixar o arquivo (HTTP " + res.status + ").");
 		var url = URL.createObjectURL(await res.blob());
-		var link = el("a", { href: url, download: arquivo.nome });
+		var link = el("a", { href: url, download: pdf ? arquivo.nome.replace(/\.xml$/, ".pdf") : arquivo.nome });
 		document.body.appendChild(link);
 		link.click();
 		link.remove();
@@ -446,6 +467,13 @@ export const SETUP_JS = String.raw`(function () {
 					busy(botao, function () { return baixar(a); }).catch(function (err) { message("notes-message", err.message, "error"); });
 				});
 				acts.appendChild(botao);
+				if (a.tipo === "nfe" || a.tipo === "nfce") {
+					var pdf = el("button", { type: "button", class: "ghost", text: a.tipo === "nfe" ? "DANFE (PDF)" : "DANFE NFC-e (PDF)" });
+					pdf.addEventListener("click", function () {
+						busy(pdf, function () { return baixar(a, true, n.situacao === "cancelada"); }).catch(function (err) { message("notes-message", err.message, "error"); });
+					});
+					acts.appendChild(pdf);
+				}
 			});
 			var item = el("li", {}, [
 				el("div", { class: "head" }, [
@@ -481,6 +509,19 @@ export const SETUP_JS = String.raw`(function () {
 			var detalhe = (s.ambiente === "producao" ? "produção" : "homologação") + " · próxima nota: " + s.proximoNumero;
 			list.appendChild(el("li", {}, [el("span", {}, [el("strong", { text: titulo }), el("span", { class: "detail", text: detalhe })])]));
 		});
+	}
+
+	// ---------- Logotipo ----------
+
+	var logoUrl = null;
+	async function renderLogo() {
+		var res = await fetch("/admin/logotipo", { headers: { authorization: "Bearer " + secret } });
+		if (logoUrl) URL.revokeObjectURL(logoUrl);
+		logoUrl = res.ok ? URL.createObjectURL(await res.blob()) : null;
+		if (logoUrl) $("logo-preview").src = logoUrl;
+		$("logo-preview").hidden = !logoUrl;
+		$("logo-empty").hidden = !!logoUrl;
+		$("logo-remove").hidden = !logoUrl;
 	}
 
 	// ---------- Atualização ----------
@@ -524,6 +565,7 @@ export const SETUP_JS = String.raw`(function () {
 		renderEnvironment();
 		await renderKeys();
 		await renderSeries();
+		await renderLogo();
 		await renderNotes();
 		await renderUpdate(false);
 		await renderAudit();
@@ -625,6 +667,33 @@ export const SETUP_JS = String.raw`(function () {
 			await renderAudit();
 		} catch (err) {
 			message("series-message", err.message, "error");
+		}
+	});
+
+	$("logo-form").addEventListener("submit", async function (ev) {
+		ev.preventDefault();
+		var arquivo = $("logo-file").files[0];
+		if (!arquivo) return;
+		try {
+			await busy(ev.submitter, function () { return api("PUT", "/admin/logotipo", arquivo); });
+			$("logo-file").value = "";
+			message("logo-message", "Logotipo salvo.", "ok");
+			await renderLogo();
+			await renderAudit();
+		} catch (err) {
+			message("logo-message", err.message, "error");
+		}
+	});
+
+	$("logo-remove").addEventListener("click", async function (ev) {
+		if (!confirm("Remover o logotipo? Os documentos passam a sair sem imagem.")) return;
+		try {
+			await busy(ev.currentTarget, function () { return api("DELETE", "/admin/logotipo"); });
+			message("logo-message", "Logotipo removido.", "ok");
+			await renderLogo();
+			await renderAudit();
+		} catch (err) {
+			message("logo-message", err.message, "error");
 		}
 	});
 

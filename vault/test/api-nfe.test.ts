@@ -410,6 +410,95 @@ describe("NFC-e pelo cofre", () => {
 	});
 });
 
+describe("DANFE e DANFE NFC-e em PDF", () => {
+	const MM = 72 / 25.4;
+	/** Baixa um PDF e o abre para conferir folhas e medidas. */
+	async function baixarPdf(caminho: string, cabecalhos: Record<string, string> = { authorization: `Bearer ${chaveApi}` }) {
+		const res = await app.request(COFRE + caminho, { headers: cabecalhos }, env);
+		if (res.status !== 200) return { status: res.status, tipo: res.headers.get("content-type"), bytes: 0, folhas: [] as { w: number; h: number }[] };
+		const bytes = new Uint8Array(await res.arrayBuffer());
+		const { PDFDocument } = await import("pdf-lib");
+		const doc = await PDFDocument.load(bytes);
+		expect(new TextDecoder().decode(bytes.slice(0, 5))).toBe("%PDF-");
+		return { status: 200, tipo: res.headers.get("content-type"), bytes: bytes.length, folhas: doc.getPages().map((p) => ({ w: Math.round(p.getWidth()), h: Math.round(p.getHeight()) })) };
+	}
+	const PNG = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (ch) => ch.charCodeAt(0));
+	const logotipo = (method: string, corpo?: Uint8Array) =>
+		app.request(`${COFRE}/admin/logotipo`, { method, headers: { authorization: `Bearer ${env.VAULT_SECRET}`, "content-type": "image/png" }, body: corpo }, env);
+
+	it("gera o DANFE da NF-e em A4, com folhas de continuação e a nota cancelada", async () => {
+		await serie();
+		const nota = (await emitir()).json;
+		const danfe = await baixarPdf(`/v1/nfe/${nota.id}/danfe`);
+		expect(danfe).toMatchObject({ status: 200, tipo: "application/pdf", folhas: [{ w: Math.round(210 * MM), h: Math.round(297 * MM) }] });
+
+		// Itens que não cabem na primeira folha continuam nas seguintes.
+		const item = (EXEMPLO_NFE as Json).itens[0];
+		const muitos = Array.from({ length: 70 }, (_, i) => ({ ...item, codigo: `P${i + 1}`, descricao: `Produto de teste número ${i + 1}` }));
+		const grande = (await emitir({ referencia: "pedido-grande", itens: muitos, cobranca: undefined, pagamentos: [{ forma: "15", valor: 700 * 70, indicador: "a_prazo" }] })).json;
+		expect(grande.situacao, JSON.stringify(grande)).toBe("autorizada");
+		expect((await baixarPdf(`/v1/nfe/${grande.id}/danfe`)).folhas.length).toBeGreaterThan(1);
+
+		// Informações complementares que não cabem no quadro continuam numa folha a mais.
+		const longa = (await emitir({ referencia: "pedido-texto-longo", informacoesComplementares: "Mercadoria sujeita a conferência no ato da entrega. ".repeat(95).trim() })).json;
+		expect((await baixarPdf(`/v1/nfe/${longa.id}/danfe`)).folhas).toHaveLength(2);
+
+		// A nota cancelada continua com DANFE (com a marca de cancelada), e o painel baixa o mesmo PDF.
+		await cliente("POST", `/v1/nfe/${nota.id}/cancelar`, { justificativa: "Pedido cancelado pelo cliente" });
+		expect((await baixarPdf(`/v1/nfe/${nota.id}/danfe`)).status).toBe(200);
+		const arquivo = ((await admin("GET", "/admin/notas")).json.notas as Json[]).find((n) => n.chaveAcesso === nota.chaveAcesso)?.arquivos.find((a: Json) => a.tipo === "nfe");
+		const doPainel = await baixarPdf(`/admin/notas/pdf?key=${encodeURIComponent(arquivo.key)}&cancelada=1`, { authorization: `Bearer ${env.VAULT_SECRET}` });
+		expect(doPainel.folhas).toHaveLength(1);
+
+		// Sem chave, com id de outro modelo ou inexistente, não há PDF.
+		expect((await baixarPdf(`/v1/nfe/${nota.id}/danfe`, {})).status).toBe(401);
+		expect((await baixarPdf(`/v1/nfce/${nota.id}/danfce`)).status).toBe(404);
+		expect((await baixarPdf("/v1/nfe/nao-existe/danfe")).status).toBe(404);
+	}, 30_000);
+
+	it("gera o DANFE NFC-e na largura da bobina", async () => {
+		await serie({ modelo: "nfce", serie: 1 });
+		const venda = (await cliente("POST", "/v1/nfce", EXEMPLO_NFCE)).json;
+		const de80 = await baixarPdf(`/v1/nfce/${venda.id}/danfce`);
+		const de58 = await baixarPdf(`/v1/nfce/${venda.id}/danfce?largura=58`);
+		expect(de80).toMatchObject({ status: 200, tipo: "application/pdf" });
+		// Um ponto do PDF por ponto da impressora: 576 na bobina de 80 mm e 384 na de 58 mm.
+		expect(de80.folhas.map((f) => f.w)).toEqual([576]);
+		expect(de58.folhas.map((f) => f.w)).toEqual([384]);
+		expect((de58.folhas[0] as { h: number }).h).toBeGreaterThan((de80.folhas[0] as { h: number }).h);
+		expect((await baixarPdf(`/v1/nfce/${venda.id}/danfce?largura=70`)).status).toBe(400);
+		expect((await baixarPdf(`/v1/nfce/${venda.id}/danfce?via=cozinha`)).status).toBe(400);
+		expect((await baixarPdf(`/v1/nfe/${venda.id}/danfe`)).status).toBe(404);
+	});
+
+	it("o logotipo é configuração do cofre e entra nos dois documentos", async () => {
+		await serie({ modelo: "nfce", serie: 1 });
+		const venda = (await cliente("POST", "/v1/nfce", EXEMPLO_NFCE)).json;
+		const semLogo = await baixarPdf(`/v1/nfce/${venda.id}/danfce`);
+		expect((await cliente("GET", "/v1/cofre/logotipo")).status).toBe(404);
+		expect((await cliente("GET", "/v1/cofre")).json.logotipo).toBe(false);
+
+		// Só imagem PNG ou JPEG, de até 300 KB.
+		expect((await logotipo("PUT", new TextEncoder().encode("isto não é uma imagem"))).status).toBe(400);
+		expect((await logotipo("PUT", new Uint8Array(301 * 1024))).status).toBe(400);
+		const salvo = await logotipo("PUT", PNG);
+		expect(salvo.status).toBe(200);
+		expect(((await salvo.json()) as Json).logotipo).toMatchObject({ tipo: "image/png", largura: 1, altura: 1 });
+
+		const imagem = await app.request(`${COFRE}/v1/cofre/logotipo`, { headers: { authorization: `Bearer ${chaveApi}` } }, env);
+		expect(imagem.headers.get("content-type")).toBe("image/png");
+		expect(new Uint8Array(await imagem.arrayBuffer())).toEqual(PNG);
+		expect((await cliente("GET", "/v1/cofre")).json.logotipo).toBe(true);
+		const comLogo = await baixarPdf(`/v1/nfce/${venda.id}/danfce`);
+		expect(comLogo.bytes).toBeGreaterThan(semLogo.bytes);
+		expect((comLogo.folhas[0] as { h: number }).h).toBeGreaterThan((semLogo.folhas[0] as { h: number }).h);
+
+		expect((await logotipo("DELETE")).status).toBe(200);
+		expect((await logotipo("GET")).status).toBe(404);
+		expect((await baixarPdf(`/v1/nfce/${venda.id}/danfce`)).folhas).toEqual(semLogo.folhas);
+	});
+});
+
 describe("séries, inutilização e estado do cofre", () => {
 	it("o próximo número não pode voltar para um já usado; filial precisa ser da mesma raiz", async () => {
 		await serie({ proximoNumero: 50 });

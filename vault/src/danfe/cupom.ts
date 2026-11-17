@@ -9,35 +9,7 @@
 // Os textos fixos usam só caracteres comuns às páginas de código de impressoras
 // térmicas (sem travessão, reticências ou símbolos tipográficos).
 
-import { DOMParser } from "@xmldom/xmldom";
-
-interface No {
-	nodeType: number;
-	localName: string | null;
-	textContent: string | null;
-	childNodes: { length: number; item(i: number): unknown };
-}
-
-function filhos(pai: No | undefined, nome: string): No[] {
-	const saida: No[] = [];
-	if (!pai) return saida;
-	for (let i = 0; i < pai.childNodes.length; i++) {
-		const n = pai.childNodes.item(i) as No;
-		if (n.nodeType === 1 && n.localName === nome) saida.push(n);
-	}
-	return saida;
-}
-const filho = (pai: No | undefined, nome: string) => filhos(pai, nome)[0];
-const texto = (pai: No | undefined, nome: string) => filho(pai, nome)?.textContent?.trim() || undefined;
-function primeiro(raiz: No, nome: string): No | undefined {
-	if (raiz.localName === nome) return raiz;
-	for (let i = 0; i < raiz.childNodes.length; i++) {
-		const n = raiz.childNodes.item(i) as No;
-		const achado = n.nodeType === 1 ? primeiro(n, nome) : undefined;
-		if (achado) return achado;
-	}
-	return undefined;
-}
+import { atributo, dataHora, dinheiro, documento, endereco, filho, filhos, numero, primeiro, raizDoXml, texto } from "./leitura";
 
 export type Alinhamento = "esquerda" | "centro" | "direita";
 
@@ -109,31 +81,9 @@ const FORMAS: Record<string, string> = {
 	"19": "Programa de Fidelidade", "20": "PIX", "21": "Crédito em Loja", "90": "Sem Pagamento", "99": "Outros",
 };
 
-const numero = (v: string | undefined) => Number(v ?? 0) || 0;
-/** 1234.5 -> "1.234,50" */
-export function dinheiro(valor: number): string {
-	const [inteiro, centavos] = valor.toFixed(2).split(".");
-	return `${(inteiro as string).replace(/\B(?=(\d{3})+(?!\d))/g, ".")},${centavos}`;
-}
 /** Quantidade com até quatro casas, sem zeros sobrando: 2 -> "2", 1.5 -> "1,5". */
 function quantidade(valor: number): string {
 	return String(Number(valor.toFixed(4))).replace(".", ",");
-}
-function documento(doc: string): string {
-	if (doc.length === 14) return doc.replace(/^(.{2})(.{3})(.{3})(.{4})(.{2})$/, "$1.$2.$3/$4-$5");
-	if (doc.length === 11) return doc.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
-	return doc;
-}
-/** "2026-11-17T07:08:41-03:00" -> "17/11/2026 07:08:41". A data do XML já está no horário local. */
-function dataHora(iso: string | undefined): string {
-	const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso ?? "");
-	return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}` : "";
-}
-function endereco(e: No | undefined): string {
-	if (!e) return "";
-	const partes = [texto(e, "xLgr"), texto(e, "nro"), texto(e, "xCpl"), texto(e, "xBairro")].filter(Boolean).join(", ");
-	const cidade = [texto(e, "xMun"), texto(e, "UF")].filter(Boolean).join(" - ");
-	return [partes, cidade].filter(Boolean).join(", ");
 }
 
 const linha = (t: string, alinhamento: Alinhamento = "esquerda", negrito = false, tamanho: "normal" | "dobrado" = "normal"): Linha => ({
@@ -149,13 +99,8 @@ export class CupomError extends Error {}
  * NFC-e assinada que ainda aguarda autorização (contingência).
  */
 export function montarCupom(xml: string, opcoes: { via?: "consumidor" | "estabelecimento" } = {}): Cupom {
-	let raiz: No | undefined;
-	try {
-		raiz = new DOMParser({ onError: () => undefined }).parseFromString(xml, "application/xml").documentElement as unknown as No;
-	} catch {
-		raiz = undefined;
-	}
-	const inf = raiz && primeiro(raiz, "infNFe");
+	const raiz = raizDoXml(xml);
+	const inf = primeiro(raiz, "infNFe");
 	const ide = filho(inf, "ide");
 	if (!raiz || !inf || !ide || texto(ide, "mod") !== "65") throw new CupomError("O XML arquivado não é de uma NFC-e.");
 
@@ -167,7 +112,7 @@ export function montarCupom(xml: string, opcoes: { via?: "consumidor" | "estabel
 	const supl = primeiro(raiz, "infNFeSupl");
 	const prot = primeiro(raiz, "infProt");
 
-	const chave = (inf as unknown as { getAttribute(n: string): string | null }).getAttribute("Id")?.replace(/^NFe/, "") ?? "";
+	const chave = atributo(inf, "Id")?.replace(/^NFe/, "") ?? "";
 	const homologacao = texto(ide, "tpAmb") === "2";
 	const contingencia = texto(ide, "tpEmis") === "9";
 	const protocolo = texto(prot, "nProt") ?? null;

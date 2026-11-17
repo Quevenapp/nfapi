@@ -26,6 +26,7 @@ import { CupomError, montarCupom } from "./danfe/cupom";
 import * as banco from "./emissao/banco";
 import { MODELO, cancelarNfe, corrigirNfe, emitirNfe, inutilizarNumeracao, sincronizarNfe, statusSefaz } from "./emissao/nfe";
 import { autorizadorNfe, ufsAtendidas } from "./fiscal/dados";
+import { temLogotipo } from "./logotipo";
 import { CancelamentoNfe, CartaCorrecao, InutilizacaoInput, NfceInput, NfeInput, type PedidoNfe, UFS } from "./nfe/schema";
 import * as store from "./store";
 import type { Transport } from "./transport";
@@ -346,6 +347,8 @@ export function registrarApiNfe(app: Hono<Ctx>, makeTransport: (env: AppEnv) => 
 			chave: { escopo: chave.scope, ambientes: chave.scope === "homologacao" || !producaoLiberada ? ["homologacao"] : ["homologacao", "producao"] },
 			documentos: { nfse: true, nfe: { ufs: ufsAtendidas("55") }, nfce: { ufs: ufsAtendidas("65") } },
 			contingencia: { notasPendentes: await banco.contarEmContingencia(c.env.DB) },
+			/** Há logotipo cadastrado? A imagem sai em GET /v1/cofre/logotipo. */
+			logotipo: await temLogotipo(c.env.DOCS),
 		});
 	});
 

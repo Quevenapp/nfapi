@@ -8,6 +8,7 @@
 
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { registrarApiDanfe } from "./api-danfe";
 import { registrarApiNfe } from "./api-nfe";
 import { cancelarPeloPainel, registrarApiNfse } from "./api-nfse";
 import { registrarAtualizacao } from "./atualizacao";
@@ -78,7 +79,7 @@ export function createApp(makeTransport: (env: AppEnv) => Transport, deps: AppDe
 	app.get("/health", (c) => c.json({ ok: true, version: VAULT_VERSION }));
 
 	const CSP =
-		"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
+		"default-src 'none'; script-src 'self'; style-src 'self'; img-src blob:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
 	app.get("/setup", (c) => {
 		c.header("content-security-policy", CSP);
 		return c.html(SETUP_HTML);
@@ -219,6 +220,7 @@ export function createApp(makeTransport: (env: AppEnv) => Transport, deps: AppDe
 	registrarAtualizacao(app, callFetch);
 	registrarApiNfse(app, makeTransport);
 	registrarApiNfe(app, makeTransport, callFetch);
+	registrarApiDanfe(app);
 
 	return app;
 }

@@ -53,7 +53,10 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 | `POST /v1/{doc}/:id/cancelar` | Cancela |
 | `POST /v1/{doc}/:id/consultar` | NF-e e NFC-e: consulta a SEFAZ e fecha uma emissão que ficou sem resposta |
 | `POST /v1/nfe/:id/carta-correcao` | NF-e: registra uma carta de correção |
+| `GET /v1/nfe/:id/danfe` | NF-e: DANFE em PDF (A4) |
 | `GET /v1/nfce/:id/cupom` | NFC-e: conteúdo do DANFE NFC-e em JSON, para imprimir na bobina |
+| `GET /v1/nfce/:id/danfce` | NFC-e: DANFE NFC-e em PDF, na largura da bobina (`?largura=80` ou `58`) |
+| `GET /v1/cofre/logotipo` | Logotipo cadastrado no cofre, para o sistema do caixa imprimir no cupom |
 | `POST /v1/inutilizacoes` | NF-e e NFC-e: inutiliza uma faixa de numeração (extinta em SP, AC e BA) |
 | `GET /v1/series` | Séries cadastradas e o próximo número de cada uma |
 | `GET /v1/cofre` | Versão, atualização pendente, validade do certificado e ambientes liberados |
@@ -68,7 +71,9 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 - **Reforma tributária.** O grupo de IBS e CBS (`impostos.ibsCbs`) já é exigido do regime normal em homologação; o cofre o repassa como informado e soma os totais. Cobre alíquota reduzida, diferimento, devolução de tributo, tributação regular, compras governamentais, IBS e CBS do Simples Nacional, estorno de crédito e crédito presumido, além do Imposto Seletivo (`impostos.impostoSeletivo`). Ainda fora: regime monofásico (combustíveis), transferência de crédito, ajuste de competência e crédito presumido da Zona Franca de Manaus. O valor da nota (`vNF`) ainda não inclui IBS, CBS nem Imposto Seletivo.
 - **Exportação e importação.** Na exportação, o destinatário vai com `idEstrangeiro` e endereço no exterior (`uf: "EX"`, `codigoMunicipio: "9999999"`, `codigoPais`), a nota leva `exportacao` (UF e local de embarque) e o item pode levar `exportacao` (drawback e exportação indireta). Na importação, o item leva `importacao` (a declaração de importação com as adições) e `impostos.ii`.
 - **Cupom da NFC-e.** `GET /v1/nfce/:id/cupom` devolve o conteúdo do DANFE NFC-e já organizado: as divisões na ordem do manual oficial, os dizeres obrigatórios, os itens em campos, os totais e pagamentos como pares de rótulo e valor, a chave de acesso e o texto do QR Code. O sistema do caixa transforma isso na impressão da bobina (58 ou 80 mm); o cofre não conhece impressora.
-- **Ainda não há:** DANFE e DANFCE em PDF, contingência da NF-e (SVC) e eventos além de cancelamento e carta de correção.
+- **DANFE e DANFE NFC-e em PDF.** O cofre gera os dois a partir do XML arquivado, a cada pedido, sem guardar o PDF. O DANFE da NF-e sai em A4, com canhoto, código de barras da chave, duplicatas, transportador e folhas de continuação quando os itens não cabem; a nota cancelada leva a marca CANCELADA e a de homologação, SEM VALOR FISCAL. O DANFE NFC-e sai na largura da bobina, com um ponto do PDF por ponto da impressora térmica (576 de largura para 80 mm, 384 para 58 mm): convertido em imagem nessa largura, o QR Code fica com módulos inteiros. Os totais de IBS, CBS e Imposto Seletivo saem nas informações complementares do DANFE, porque o leiaute oficial ainda não tem campos para eles.
+- **Logotipo.** O emitente envia a imagem (PNG ou JPEG, até 300 KB) no painel do cofre; ela entra nos dois PDFs e fica disponível em `GET /v1/cofre/logotipo`.
+- **Ainda não há:** impressão da carta de correção, contingência da NF-e (SVC) e eventos além de cancelamento e carta de correção.
 
 ### Contingência da NFC-e
 

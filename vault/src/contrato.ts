@@ -244,6 +244,7 @@ const filtros = [
 	{ name: "limite", in: "query", schema: { type: "integer", default: 50, maximum: 200 } },
 ];
 const xml = { description: "XML autorizado.", content: { "application/xml": { schema: texto } } };
+const pdf = (descricao: string) => ({ description: descricao, content: { "application/pdf": { schema: { type: "string", format: "binary" } } } });
 const xmlDoEvento = { description: "XML do evento com o retorno do governo, como deve ser guardado e entregue.", content: { "application/xml": { schema: texto } } };
 
 /** Resposta de cancelamento e de carta de correção: a emissão e se o pedido era repetido. */
@@ -278,7 +279,7 @@ export const CODIGOS_DE_ERRO: Record<string, { status: number; quando: string }>
 	emissao_em_andamento: { status: 409, quando: "Já há um pedido com a mesma referência em andamento. Aguarde e consulte." },
 	referencia_com_conteudo_diferente: { status: 409, quando: "A referência já foi usada com outro conteúdo. Não repita: é um documento novo ou um erro do chamador." },
 	numero_ja_utilizado: { status: 409, quando: "NFS-e: o número informado no pedido já foi usado na série." },
-	nfe_nao_autorizada: { status: 409, quando: "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada, ou cupom de NFC-e sem XML arquivado." },
+	nfe_nao_autorizada: { status: 409, quando: "Cancelamento ou carta de correção de NF-e/NFC-e que não está autorizada, ou pedido de cupom, DANFE ou DANFE NFC-e de nota sem XML arquivado." },
 	nfse_nao_autorizada: { status: 409, quando: "Cancelamento de NFS-e que não está autorizada." },
 	faixa_em_uso: { status: 409, quando: "Inutilização de faixa que contém nota autorizada ou em andamento." },
 	serie_nao_cadastrada: { status: 422, quando: "A série do pedido não está cadastrada no cofre para o modelo e o ambiente." },
@@ -366,6 +367,38 @@ function rotasNfe(doc: "nfe" | "nfce", nome: string, pedido: string, exemplo: un
 					{ name: "via", in: "query", schema: { type: "string", enum: ["consumidor", "estabelecimento"], default: "consumidor" }, description: "A via do estabelecimento só existe na nota em contingência; nas demais o cupom sai sempre como via do consumidor." },
 				],
 				responses: { "200": resposta("O cupom.", ref("Cupom")), ...erros(400, 401, 404, 409) },
+			},
+		};
+		rotas[`${base}/{id}/danfce`] = {
+			get: {
+				tags,
+				summary: "DANFE NFC-e em PDF, na largura da bobina",
+				description:
+					"O mesmo conteúdo do cupom em JSON, já diagramado, para o caixa que não monta a impressão por conta própria. " +
+					"A página tem um ponto do PDF por ponto da impressora térmica (8 por milímetro): 576 de largura na bobina de 80 mm e 384 na de 58 mm, com a altura que o conteúdo pedir. " +
+					"Convertido em imagem nessa mesma largura, o QR Code sai com módulos inteiros, em preto puro. Para imprimir pelo driver da impressora, ajuste à largura do papel. " +
+					"Leva o logotipo cadastrado no cofre, quando há. O PDF é gerado a cada pedido.",
+				parameters: [
+					id,
+					{ name: "largura", in: "query", schema: { type: "string", enum: ["80", "58"], default: "80" }, description: "Largura da bobina, em milímetros." },
+					{ name: "via", in: "query", schema: { type: "string", enum: ["consumidor", "estabelecimento"], default: "consumidor" }, description: "A via do estabelecimento só existe na nota em contingência." },
+				],
+				responses: { "200": pdf("O DANFE NFC-e."), ...erros(400, 401, 404, 409) },
+			},
+		};
+	}
+	if (doc === "nfe") {
+		rotas[`${base}/{id}/danfe`] = {
+			get: {
+				tags,
+				summary: "DANFE em PDF (A4)",
+				description:
+					"Montado a partir do XML arquivado, com os quadros do DANFE: canhoto, emitente, chave de acesso com código de barras, destinatário, fatura e duplicatas, cálculo do imposto, transportador, itens e dados adicionais. " +
+					"Os itens que não cabem na primeira folha continuam nas seguintes. A nota cancelada sai com a marca CANCELADA, e a de homologação, com SEM VALOR FISCAL. " +
+					"Os totais de IBS, CBS e Imposto Seletivo saem nas informações complementares, porque o leiaute do DANFE ainda não tem campos para eles. " +
+					"Leva o logotipo cadastrado no cofre, quando há. O PDF é gerado a cada pedido.",
+				parameters: [id],
+				responses: { "200": pdf("O DANFE."), ...erros(401, 404, 409) },
 			},
 		};
 	}
@@ -481,6 +514,17 @@ export function contratoOpenApi(): Json {
 					responses: { "200": resposta("Estado.", ref("Cofre")), ...erros(401) },
 				},
 			},
+			"/v1/cofre/logotipo": {
+				get: {
+					tags: ["Cofre"],
+					summary: "Logotipo do emitente",
+					description: "A imagem que o emitente cadastrou na tela do cofre, para o sistema do caixa imprimir no cupom. Os PDFs do cofre já a incluem.",
+					responses: {
+						"200": { description: "A imagem, em PNG ou JPEG.", content: { "image/png": { schema: { type: "string", format: "binary" } }, "image/jpeg": { schema: { type: "string", format: "binary" } } } },
+						...erros(401, 404),
+					},
+				},
+			},
 			"/v1/sefaz/status": {
 				get: {
 					tags: ["Cofre"],
@@ -580,6 +624,7 @@ export function contratoOpenApi(): Json {
 							type: "object",
 							properties: { notasPendentes: { type: "integer", description: "NFC-e emitidas em contingência que ainda aguardam a transmissão à SEFAZ." } },
 						},
+						logotipo: { type: "boolean", description: "Há logotipo cadastrado no cofre. A imagem sai em GET /v1/cofre/logotipo." },
 						chave: { type: "object", properties: { escopo: { type: "string", enum: ["completo", "homologacao"] }, ambientes: { type: "array", items: AMBIENTE } } },
 						documentos: {
 							type: "object",
