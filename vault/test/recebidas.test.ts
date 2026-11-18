@@ -580,3 +580,133 @@ describe("painel: notas recebidas", () => {
 		expect((await app.request(`${COFRE}/admin/recebidas`, {}, env)).status).toBe(401);
 	});
 });
+
+describe("painel: visão geral, listagens e detalhe", () => {
+	it("lista as notas emitidas com filtros, mostra o detalhe e soma o período", async () => {
+		await admin("PUT", "/admin/series", { modelo: "nfe", ambiente: "homologacao", serie: 1 });
+		const a = (await cliente("POST", "/v1/nfe", EXEMPLO_NFE)).json;
+		const b = (await cliente("POST", "/v1/nfe", { ...EXEMPLO_NFE, referencia: "pedido-1002", destinatario: { ...EXEMPLO_NFE.destinatario, cnpj: FORNECEDOR, nome: "Outra Empresa de Teste" } })).json;
+		expect([a.situacao, b.situacao]).toEqual(["autorizada", "autorizada"]);
+		const emitidas = async (query = "") => (await admin("GET", `/admin/painel/emitidas${query}`)).json;
+		const ids = async (query: string) => (await emitidas(query)).itens.map((n: Json) => n.id);
+
+		const lista = await emitidas();
+		expect(lista).toMatchObject({ total: 2, valor: 1400, pagina: 1, porPagina: 25, resumosPendentes: 0 });
+		expect(lista.itens.map((n: Json) => [n.id, n.modelo, n.numero, n.situacao, n.valor, n.destinatario.documento, n.destinatario.nome, n.chaveAcesso])).toEqual([
+			[b.id, "nfe", String(b.numero), "autorizada", 700, FORNECEDOR, "Outra Empresa de Teste", b.chaveAcesso],
+			[a.id, "nfe", String(a.numero), "autorizada", 700, "99888777000166", "Cliente Ltda", a.chaveAcesso],
+		]);
+
+		// Busca: nome, documento com pontuação, número da nota, chave de acesso e referência.
+		expect(await ids("?busca=outra%20empresa")).toEqual([b.id]);
+		expect(await ids("?busca=99.888.777%2F0001-66")).toEqual([a.id]);
+		expect(await ids(`?busca=${a.numero}`)).toEqual([a.id]);
+		expect(await ids(`?busca=${b.chaveAcesso}`)).toEqual([b.id]);
+		expect(await ids("?busca=pedido-1002")).toEqual([b.id]);
+		expect(await ids("?busca=ninguem")).toEqual([]);
+		// Filtros de situação, documento, ambiente e período.
+		expect(await ids("?situacao=autorizada&modelo=nfe&ambiente=homologacao")).toHaveLength(2);
+		for (const q of ["?situacao=cancelada", "?modelo=nfce", "?ambiente=producao", "?de=2999-01-01", "?ate=2000-01-01"]) expect(await ids(q), q).toEqual([]);
+		// Paginação.
+		expect(await emitidas("?porPagina=1&pagina=2")).toMatchObject({ total: 2, valor: 1400, pagina: 2, porPagina: 1, itens: [{ id: a.id }] });
+
+		const detalhe = (await admin("GET", `/admin/painel/emitidas/${a.id}`)).json;
+		expect(detalhe.nota).toMatchObject({ id: a.id, chaveAcesso: a.chaveAcesso, protocolo: a.protocolo, situacao: "autorizada", cartasCorrecao: 0, destinatario: { nome: "Cliente Ltda" }, mensagens: a.mensagens });
+		expect(detalhe.arquivos.map((x: Json) => x.tipo)).toEqual(["nfe"]);
+		expect((await admin("GET", `/admin/notas/arquivo?key=${encodeURIComponent(detalhe.arquivos[0].key)}`)).text).toContain(a.chaveAcesso);
+		expect((await admin("GET", "/admin/painel/emitidas/nfe_nao_existe")).status).toBe(404);
+
+		// Visão geral: sem ambiente informado, vale o que o cofre pode emitir (produção bloqueada).
+		const resumoGeral = (await admin("GET", "/admin/painel/resumo")).json;
+		expect(resumoGeral).toMatchObject({
+			ambiente: "homologacao", producaoLiberada: false, contingenciaPendente: 0, resumosPendentes: 0,
+			certificado: { holder: { id: CNPJ_TESTE } },
+			emitidas: { autorizadas: { quantidade: 2, valor: 1400 }, canceladas: { quantidade: 0 }, naoAutorizadas: { quantidade: 0 }, pendentes: { quantidade: 0 } },
+			recebidas: { quantidade: 0, semXml: 0 },
+		});
+		expect(resumoGeral.emitidas.porModelo).toEqual([{ modelo: "nfe", situacao: "autorizada", quantidade: 2, valor: 1400 }]);
+		expect(resumoGeral.emitidas.porDia).toEqual([{ dia: lista.itens[0].emitidaEm.slice(0, 10), quantidade: 2, valor: 1400 }]);
+		expect((await admin("GET", "/admin/painel/resumo?ambiente=producao")).json.emitidas.autorizadas).toEqual({ quantidade: 0, valor: 0 });
+		expect((await admin("GET", "/admin/painel/resumo?de=2000-01-01&ate=2000-01-31")).json).toMatchObject({ periodo: { de: "2000-01-01", ate: "2000-01-31" }, emitidas: { autorizadas: { quantidade: 0 } } });
+		expect((await app.request(`${COFRE}/admin/painel/resumo`, {}, env)).status).toBe(401);
+
+		// Nota anterior ao painel (sem o destinatário gravado): o cofre o lê do XML arquivado.
+		await env.DB.prepare("UPDATE emissions SET summarized = 0, recipient_doc = NULL, recipient_name = NULL WHERE id = ?").bind(a.id).run();
+		const depois = await emitidas();
+		expect(depois.resumosPendentes).toBe(0);
+		expect(depois.itens.find((n: Json) => n.id === a.id).destinatario.documento).toBe("99888777000166");
+	});
+
+	it("a migração preenche a data, o dia e o valor das notas que já existiam", async () => {
+		// Notas como as versões anteriores as gravavam: sem as colunas do painel.
+		const criada = Date.UTC(2026, 10, 16, 1, 30); // 15/11, 22:30 em Brasília
+		const inserir = (id: string, kind: string, numero: number, status: string, extra: Json, documentKey: string | null) =>
+			env.DB.prepare(
+				`INSERT INTO emissions (id, doc_id, kind, environment, serie, number, document_id, status, extra, document_key, created_at, updated_at)
+				 VALUES (?, ?, ?, 'producao', '1', ?, ?, ?, ?, ?, ?, ?)`,
+			)
+				.bind(id, CNPJ_TESTE, kind, numero, id, status, JSON.stringify(extra), documentKey, criada, criada)
+				.run();
+		await inserir("nfe_antiga", "nfe", 1, "autorizada", { emitidaEm: "2026-11-10T23:30:00-03:00", valor: 700 }, null);
+		await inserir("nfs_antiga", "nfse", 2, "autorizada", {}, "nfse/producao/2026/11/antiga-nfse.xml");
+		await inserir("nfe_recusada", "nfe", 3, "rejeitada", {}, null);
+		await env.DB.prepare("INSERT INTO documents (key, content_type, size, sha256, meta, created_at) VALUES (?, 'application/xml', 1, 'x', ?, ?)")
+			.bind("nfse/producao/2026/11/antiga-nfse.xml", JSON.stringify({ tipo: "nfse", valor: 1500, emitidaEm: "2026-11-16T01:30:00.000Z" }), criada)
+			.run();
+
+		const migracao = env.TEST_MIGRATIONS.find((m) => m.name.startsWith("0007"));
+		const preenchimentos = (migracao?.queries ?? []).filter((q) => q.includes("UPDATE emissions"));
+		expect(preenchimentos).toHaveLength(3);
+		for (const q of preenchimentos) await env.DB.prepare(q).run();
+
+		const { results } = await env.DB.prepare("SELECT id, issued_at, issued_day, value FROM emissions ORDER BY number").all();
+		expect(results).toEqual([
+			{ id: "nfe_antiga", issued_at: "2026-11-10T23:30:00-03:00", issued_day: "2026-11-10", value: 700 },
+			// Data em UTC: o dia é o de Brasília.
+			{ id: "nfs_antiga", issued_at: "2026-11-16T01:30:00.000Z", issued_day: "2026-11-15", value: 1500 },
+			{ id: "nfe_recusada", issued_at: null, issued_day: "2026-11-15", value: null },
+		]);
+		// E o painel as encontra pelo período.
+		const noDia = (await admin("GET", "/admin/painel/emitidas?de=2026-11-15&ate=2026-11-15&ambiente=producao")).json;
+		expect(noDia.itens.map((n: Json) => [n.id, n.numero, n.numeroDps, n.situacao])).toEqual([["nfe_recusada", "3", null, "rejeitada"], ["nfs_antiga", null, 2, "autorizada"]]);
+		expect(noDia.resumosPendentes).toBe(0);
+	});
+
+	it("lista as notas recebidas com filtros e mostra os eventos no detalhe", async () => {
+		const [a, b] = [chaveDoFornecedor(101), chaveDoFornecedor(102)];
+		an.fila = [
+			{ nsu: 11, schema: "resNFe_v1.01.xsd", xml: resumo(a) },
+			{ nsu: 12, schema: "resNFe_v1.01.xsd", xml: resumo(b, { valor: "80.00" }) },
+			{ nsu: 13, schema: "procEventoNFe_v1.00.xsd", xml: cancelamento(b) },
+		];
+		an.porChave[a] = notaCompleta(a);
+		await configurar();
+		await sincronizar();
+		const notas = async (query = "") => (await admin("GET", `/admin/painel/recebidas${query}`)).json;
+		const chaves = async (query: string) => (await notas(query)).itens.map((n: Json) => n.chaveAcesso);
+
+		expect(await notas()).toMatchObject({ total: 2, valor: 1600.75, semXml: 2, pagina: 1 });
+		expect(await chaves("?busca=fornecedor%20de%20teste")).toHaveLength(2);
+		expect(await chaves("?busca=102")).toEqual([b]);
+		expect(await chaves(`?busca=${a}`)).toEqual([a]);
+		expect(await chaves(`?busca=${FORNECEDOR}`)).toHaveLength(2);
+		expect(await chaves("?situacao=cancelada")).toEqual([b]);
+		expect(await chaves("?xml=completo")).toEqual([]);
+		expect(await chaves("?ambiente=producao")).toEqual([]);
+		expect(await chaves("?ate=2000-01-01")).toEqual([]);
+
+		// Depois da ciência a nota A fica com o XML completo.
+		const notaA = (await notas(`?busca=${a}`)).itens[0];
+		await admin("POST", "/admin/recebidas/manifestar", { id: notaA.id, tipo: "ciencia" });
+		expect(await chaves("?xml=completo")).toEqual([a]);
+		expect(await chaves("?xml=resumo")).toEqual([b]);
+
+		const notaB = (await notas(`?busca=${b}`)).itens[0];
+		const detalhe = (await admin("GET", `/admin/painel/recebidas/${notaB.id}`)).json;
+		expect(detalhe.nota).toMatchObject({ chaveAcesso: b, situacao: "cancelada" });
+		expect(detalhe.eventos).toEqual([{ codigo: "110111", sequencia: 1, descricao: "Cancelamento", registradoEm: "2026-11-11T08:00:00-03:00", protocolo: "135260000009999", autor: FORNECEDOR }]);
+		expect((await admin("GET", "/admin/painel/recebidas/rcb_nao_existe")).status).toBe(404);
+		// A visão geral conta as recebidas do período.
+		expect((await admin("GET", "/admin/painel/resumo?de=2000-01-01&ate=2999-12-31")).json.recebidas).toMatchObject({ quantidade: 2, semXml: 1 });
+	});
+});

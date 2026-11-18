@@ -11,6 +11,7 @@ import { z } from "zod";
 import { registrarApiDanfe } from "./api-danfe";
 import { registrarApiNfe } from "./api-nfe";
 import { cancelarPeloPainel, registrarApiNfse } from "./api-nfse";
+import { registrarApiPainel } from "./api-painel";
 import { registrarApiRecebidas } from "./api-recebidas";
 import { registrarAtualizacao } from "./atualizacao";
 import { isAdminSecret, secretIsStrong } from "./crypto";
@@ -223,6 +224,7 @@ export function createApp(makeTransport: (env: AppEnv) => Transport, deps: AppDe
 	registrarApiNfe(app, makeTransport, callFetch);
 	registrarApiDanfe(app);
 	registrarApiRecebidas(app, makeTransport);
+	registrarApiPainel(app);
 
 	return app;
 }

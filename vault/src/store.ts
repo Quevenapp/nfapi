@@ -253,6 +253,28 @@ export async function listDocuments(
 	}));
 }
 
+/** Arquivos de uma nota emitida (a nota, a DPS e os eventos), pela chave de acesso. */
+export async function listArquivosDaNota(db: D1Database, chaveAcesso: string): Promise<NotaArquivo[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT key, size, meta FROM documents
+			 WHERE (key LIKE 'nfse/%' OR key LIKE 'nfe/%' OR key LIKE 'nfce/%') AND json_extract(meta, '$.chaveAcesso') = ?
+			 ORDER BY created_at`,
+		)
+		.bind(chaveAcesso)
+		.all<{ key: string; size: number; meta: string }>();
+	const ordem = ["nfse", "nfe", "nfce", "dps", "carta_correcao", "cancelamento"];
+	const posicao = (tipo: string) => (ordem.includes(tipo) ? ordem.indexOf(tipo) : ordem.length);
+	return results
+		.map((r) => {
+			const meta = JSON.parse(r.meta) as Record<string, unknown>;
+			return { tipo: typeof meta.tipo === "string" ? meta.tipo : "arquivo", key: r.key, nome: r.key.split("/").pop() ?? r.key, tamanho: r.size };
+		})
+		// A cópia de trabalho enviada à SEFAZ não é um arquivo da nota.
+		.filter((a) => a.tipo !== "enviada")
+		.sort((a, b) => posicao(a.tipo) - posicao(b.tipo));
+}
+
 // ---------- Notas emitidas (visão do emitente) ----------
 
 export interface NotaArquivo {

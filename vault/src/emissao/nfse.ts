@@ -176,6 +176,12 @@ export async function emitirNfse(
 					};
 				}
 			}
+			// Dados por onde o painel filtra: valor e tomador.
+			await banco.anotarResumo(d1, emission.id, {
+				value: pedido.valores.servico,
+				recipientDoc: pedido.tomador?.cnpj ?? pedido.tomador?.cpf ?? null,
+				recipientName: pedido.tomador?.nome ?? null,
+			});
 
 			// ----- Assinar -----
 			try {
@@ -247,6 +253,7 @@ export async function emitirNfse(
 		documentKey: `${base}-nfse.xml`,
 		...(journalKey ? { journalKey } : {}),
 	});
+	await banco.anotarResumo(d1, emission.id, { issuedAt: meta.emitidaEm });
 	return { tipo: "autorizada", nova: true, emission: final };
 }
 

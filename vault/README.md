@@ -28,13 +28,22 @@ O passo a passo completo, com gerador do segredo, está em **<https://nfapi.quev
    Ele cifra o certificado e é a senha do painel. Se for perdido, será preciso reinstalar o certificado.
 2. Clique em **Deploy to Cloudflare**. No campo `VAULT_SECRET`, apague o que o navegador tiver preenchido sozinho e cole o segredo. Deixe **Proteger com Cloudflare Access** desligado.
 3. Abra `https://<seu-cofre>/setup`, entre com o segredo e:
-   - envie o arquivo `.pfx` do certificado A1 e a senha dele;
-   - rode o **teste de conexão**, que consulta os serviços de homologação;
-   - crie uma **chave de API** para cada sistema que vai emitir;
-   - para NF-e e NFC-e, cadastre as **séries** (com o número da próxima nota);
-   - configure o **gatilho de atualização** (veja abaixo); enquanto ele faltar, o painel avisa no topo.
+   - em **Configuração**, envie o arquivo `.pfx` do certificado A1 e a senha dele, rode o **teste de conexão** (consulta os serviços de homologação) e, para NF-e e NFC-e, cadastre as **séries** (com o número da próxima nota);
+   - em **Chaves de API**, crie uma chave para cada sistema que vai emitir;
+   - em **Atualização**, configure o **gatilho de atualização** (veja abaixo); enquanto ele faltar, a Visão geral avisa.
 
 A produção começa **bloqueada**: o cofre só emite em homologação até você liberar no painel.
+
+## Painel
+
+O painel (`/setup`) é a tela de trabalho do emitente, além de ser onde o cofre é configurado:
+
+- **Visão geral.** As notas do período por documento e situação, o valor autorizado por dia, as notas recebidas e a lista do que precisa de atenção: certificado perto de vencer, notas sem resposta, NFC-e em contingência, consulta bloqueada, versão nova.
+- **Notas emitidas.** Listagem com filtro por período, documento, situação e ambiente, e busca por número, chave de acesso, referência, nome ou documento do destinatário. Cada nota abre com os dados, as mensagens do governo, os arquivos (XML, eventos, DANFE em PDF) e o cancelamento.
+- **Notas recebidas.** O estado da consulta ao Ambiente Nacional, a listagem com os mesmos filtros e, em cada nota, os eventos, o histórico de manifestações, os arquivos e a manifestação do destinatário.
+- **Configuração, Chaves de API, Atualização e Atividade.** O que antes ficava na tela única.
+
+As notas emitidas antes da versão 0.10.0 não tinham o destinatário gravado para a busca; o cofre o lê dos XML arquivados, aos poucos, quando o painel é aberto.
 
 ## API
 

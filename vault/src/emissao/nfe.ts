@@ -282,9 +282,18 @@ export async function emitirNfe(
 		const serieAusente = () => conflito("serie_nao_cadastrada", `A série ${serie} de ${nome} não está cadastrada para ${ambiente}. Cadastre-a na tela do cofre.`, 422);
 
 		/** Grava a emissão (ou atualiza a que já existe) com o número e a chave desta tentativa. */
+		/** Dados por onde o painel filtra: data, valor e destinatário. */
+		const resumir = (id: string, extra: Record<string, unknown>) =>
+			banco.anotarResumo(d1, id, {
+				issuedAt: typeof extra.emitidaEm === "string" ? extra.emitidaEm : null,
+				value: typeof extra.valor === "number" ? extra.valor : null,
+				recipientDoc: pedido.destinatario?.cnpj ?? pedido.destinatario?.cpf ?? pedido.destinatario?.idEstrangeiro ?? null,
+				recipientName: pedido.destinatario?.nome ?? null,
+			});
 		const registrar = async (numero: number, chave: string, status: "processando" | "contingencia", extra: Record<string, unknown>): Promise<boolean> => {
 			if (emission) {
 				emission = await banco.updateEmission(d1, emission.id, { status, number: numero, accessKey: chave, documentId: `NFe${chave}`, messages: [], requestHash: hash, extra });
+				await resumir(emission.id, extra);
 				return true;
 			}
 			const now = Date.now();
@@ -296,6 +305,7 @@ export async function emitirNfe(
 			};
 			if (!(await banco.insertEmission(d1, nova))) return false;
 			emission = await banco.updateEmission(d1, nova.id, { accessKey: chave });
+			await resumir(nova.id, extra);
 			return true;
 		};
 

@@ -1,5 +1,6 @@
 // NF-e recebidas e o estado da distribuição de DF-e no D1 do cofre.
 
+import { termosDeBusca } from "../emissao/banco";
 import type { Ambiente } from "../fiscal/dados";
 import type { SituacaoRecebida } from "../nfe/distribuicao";
 import type { Manifestacao } from "../nfe/eventos";
@@ -362,6 +363,50 @@ export async function listRecebidas(
 		.bind(filtro.depois ?? 0, filtro.environment ?? null, filtro.accessKey ?? null, Math.min(Math.max(filtro.limite ?? 50, 1), 200))
 		.all<Row>();
 	return results.map(toRecebida);
+}
+
+export interface FiltroDeRecebidas {
+	/** Período, pelo dia de emissão (AAAA-MM-DD), inclusive. */
+	de?: string;
+	ate?: string;
+	environment?: Ambiente;
+	situation?: SituacaoRecebida;
+	/** `completo`: com o XML; `resumo`: só o resumo. */
+	xml?: "completo" | "resumo";
+	/** Chave de acesso, número da nota, ou parte do nome ou do CNPJ do emitente. */
+	busca?: string;
+}
+
+// O dia de emissão vem com fuso (horário local do emitente); sem ele, vale o dia em que a nota chegou.
+const DIA_DA_RECEBIDA = "COALESCE(substr(issued_at, 1, 10), date(created_at / 1000, 'unixepoch', '-3 hours'))";
+const ONDE_RECEBIDAS = `(?1 IS NULL OR ${DIA_DA_RECEBIDA} >= ?1) AND (?2 IS NULL OR ${DIA_DA_RECEBIDA} <= ?2) AND (?3 IS NULL OR environment = ?3)
+	AND (?4 IS NULL OR situation = ?4) AND (?5 IS NULL OR (?5 = 'completo' AND xml_key IS NOT NULL) OR (?5 = 'resumo' AND xml_key IS NULL))
+	AND (?6 IS NULL OR access_key = ?6
+	     OR (length(?6) <= 9 AND ?6 NOT GLOB '*[^0-9]*' AND CAST(substr(access_key, 26, 9) AS INTEGER) = CAST(?6 AS INTEGER))
+	     OR emit_doc LIKE ?7 ESCAPE '\\' OR emit_name LIKE ?8 ESCAPE '\\')`;
+
+function parametrosDeRecebidas(f: FiltroDeRecebidas): (string | null)[] {
+	return [f.de ?? null, f.ate ?? null, f.environment ?? null, f.situation ?? null, f.xml ?? null, ...termosDeBusca(f.busca)];
+}
+
+/** Notas recebidas do filtro, da emissão mais recente para a mais antiga, com o total e a soma dos valores. */
+export async function buscarRecebidas(
+	db: D1Database,
+	filtro: FiltroDeRecebidas,
+	pagina: { limite: number; salto: number },
+): Promise<{ itens: Recebida[]; total: number; valor: number; semXml: number }> {
+	const p = parametrosDeRecebidas(filtro);
+	const [lista, soma] = await Promise.all([
+		db
+			.prepare(`SELECT * FROM recebidas WHERE ${ONDE_RECEBIDAS} ORDER BY ${DIA_DA_RECEBIDA} DESC, seq DESC LIMIT ?9 OFFSET ?10`)
+			.bind(...p, Math.min(Math.max(pagina.limite, 1), 200), Math.max(pagina.salto, 0))
+			.all<Row>(),
+		db
+			.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(value), 0) AS v, COALESCE(SUM(CASE WHEN xml_key IS NULL THEN 1 ELSE 0 END), 0) AS s FROM recebidas WHERE ${ONDE_RECEBIDAS}`)
+			.bind(...p)
+			.first<{ n: number; v: number; s: number }>(),
+	]);
+	return { itens: lista.results.map(toRecebida), total: soma?.n ?? 0, valor: soma?.v ?? 0, semXml: soma?.s ?? 0 };
 }
 
 /**
