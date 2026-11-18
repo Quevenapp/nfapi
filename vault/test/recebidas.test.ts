@@ -862,6 +862,50 @@ describe("painel: visão geral, listagens e detalhe", () => {
 		expect(noDia.resumosPendentes).toBe(0);
 	});
 
+	it("a migração registra as NFS-e que o cofre só tinha como arquivo", async () => {
+		// Como a API central antiga arquivava: a nota, a DPS e o evento, com os dados nos metadados.
+		const chave = (numero: number) => `353870922${CNPJ_TESTE}${String(numero).padStart(13, "0")}26111234567890`;
+		const emitida = "2026-11-16T17:00:00.000Z";
+		const criada = Date.parse(emitida);
+		const arquivar = (key: string, meta: Json) =>
+			env.DB.prepare("INSERT INTO documents (key, content_type, size, sha256, meta, created_at) VALUES (?, 'application/xml', 1, 'x', ?, ?)").bind(key, JSON.stringify(meta), criada).run();
+		for (const [dps, numero] of [[1, 5], [2, 6]] as const) {
+			const base = `nfse/producao/2026/11/${chave(numero)}`;
+			const meta = { tipo: "nfse", chaveAcesso: chave(numero), emissao: `nfs_central_${dps}`, ambiente: "producao", serie: "900", numeroDps: dps, numeroNfse: String(numero), valor: 1, emitidaEm: emitida };
+			await arquivar(`${base}-nfse.xml`, meta);
+			await arquivar(`${base}-dps.xml`, { ...meta, tipo: "dps" });
+		}
+		await arquivar(`nfse/producao/2026/11/${chave(6)}-cancelamento.xml`, { tipo: "cancelamento", chaveAcesso: chave(6), canceladaEm: emitida });
+		await env.DOCS.put(
+			`docs/nfse/producao/2026/11/${chave(5)}-nfse.xml`,
+			`<NFSe><infNFSe Id="NFS${chave(5)}"><DPS><infDPS><toma><CNPJ>99888777000166</CNPJ><xNome>Cliente Ltda</xNome></toma></infDPS></DPS></infNFSe></NFSe>`,
+		);
+		expect((await admin("GET", "/admin/painel/emitidas?ambiente=producao")).json.total).toBe(0);
+
+		const migracao = env.TEST_MIGRATIONS.find((m) => m.name.startsWith("0009"));
+		expect(migracao?.queries).toHaveLength(2);
+		// Rodar duas vezes não duplica as notas.
+		for (let vez = 0; vez < 2; vez++) for (const q of migracao?.queries ?? []) await env.DB.prepare(q).run();
+
+		const { results } = await env.DB.prepare("SELECT doc_id, serie, number, document_id, status, fiscal_number, issued_day, value FROM emissions WHERE kind = 'nfse' ORDER BY number").all();
+		expect(results).toEqual([
+			{ doc_id: CNPJ_TESTE, serie: "900", number: 1, document_id: `DPS35387092${CNPJ_TESTE}00900000000000000001`, status: "autorizada", fiscal_number: "5", issued_day: "2026-11-16", value: 1 },
+			{ doc_id: CNPJ_TESTE, serie: "900", number: 2, document_id: `DPS35387092${CNPJ_TESTE}00900000000000000002`, status: "cancelada", fiscal_number: "6", issued_day: "2026-11-16", value: 1 },
+		]);
+		// A série não repete as DPS já usadas.
+		expect(await env.DB.prepare("SELECT last_number FROM series WHERE kind = 'nfse' AND environment = 'producao' AND serie = '900'").first()).toEqual({ last_number: 2 });
+
+		// O painel as lista, com o tomador lido do XML, e mostra os arquivos no detalhe.
+		const lista = (await admin("GET", "/admin/painel/emitidas?ambiente=producao&modelo=nfse&de=2026-11-16&ate=2026-11-16")).json;
+		expect(lista).toMatchObject({ total: 2, valor: 2, resumosPendentes: 0 });
+		expect(lista.itens.map((n: Json) => [n.numero, n.numeroDps, n.situacao, n.chaveAcesso, n.destinatario?.nome ?? null])).toEqual([
+			["6", 2, "cancelada", chave(6), null],
+			["5", 1, "autorizada", chave(5), "Cliente Ltda"],
+		]);
+		const detalhe = (await admin("GET", `/admin/painel/emitidas/${lista.itens[0].id}`)).json;
+		expect(detalhe.arquivos.map((x: Json) => x.tipo)).toEqual(["nfse", "dps", "cancelamento"]);
+	});
+
 	it("lista as notas recebidas com filtros e mostra os eventos no detalhe", async () => {
 		const [a, b] = [chaveDoFornecedor(101), chaveDoFornecedor(102)];
 		an.fila = [
