@@ -15,6 +15,7 @@ const ICONES = {
 	visao: icone('<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>'),
 	emitidas: icone('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 17v-6"/><path d="M9.5 13.5 12 11l2.5 2.5"/>'),
 	recebidas: icone('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 11v6"/><path d="M9.5 14.5 12 17l2.5-2.5"/>'),
+	relatorios: icone('<path d="M4 20h16"/><rect x="6" y="11" width="3" height="6" rx="1"/><rect x="11" y="6" width="3" height="11" rx="1"/><rect x="16" y="9" width="3" height="8" rx="1"/>'),
 	configuracao: icone('<path d="M4 6h10"/><path d="M18 6h2"/><circle cx="16" cy="6" r="2"/><path d="M4 12h2"/><path d="M10 12h10"/><circle cx="8" cy="12" r="2"/><path d="M4 18h10"/><path d="M18 18h2"/><circle cx="16" cy="18" r="2"/>'),
 	chaves: icone('<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9"/><path d="M16 7l3 3"/>'),
 	atualizacao: icone('<path d="M20 11a8 8 0 0 0-14.5-4.5L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.5 4.5L20 16"/><path d="M20 20v-4h-4"/>'),
@@ -72,6 +73,7 @@ export const SETUP_HTML = `<!doctype html>
 		<p class="nav-group">Notas</p>
 		<a class="nav-item" href="#emitidas" data-nav="emitidas">${ICONES.emitidas}<span>Emitidas</span></a>
 		<a class="nav-item" href="#recebidas" data-nav="recebidas">${ICONES.recebidas}<span>Recebidas</span></a>
+		<a class="nav-item" href="#relatorios" data-nav="relatorios">${ICONES.relatorios}<span>Relatórios e exportação</span></a>
 		<p class="nav-group">Cofre</p>
 		<a class="nav-item" href="#configuracao" data-nav="configuracao">${ICONES.configuracao}<span>Configuração</span></a>
 		<a class="nav-item" href="#chaves" data-nav="chaves">${ICONES.chaves}<span>Chaves de API</span></a>
@@ -240,6 +242,109 @@ export const SETUP_HTML = `<!doctype html>
 						<p>Mude os filtros ou consulte o Ambiente Nacional. As notas dos últimos 90 dias chegam na primeira consulta.</p>
 					</div>
 					<div id="rc-paginas" class="pager"></div>
+				</div>
+			</section>
+
+			<!-- ---------- Relatórios e exportação ---------- -->
+			<section class="view" data-view="relatorios" hidden>
+				<div class="heading">
+					<div>
+						<h1>Relatórios e exportação</h1>
+						<p class="muted">Os totais do período, com os impostos lidos dos XML, e os arquivos para mandar ao contador.</p>
+					</div>
+					<form id="rl-filtros" class="heading-controls">
+						<div class="field compact"><label for="rl-ambiente">Ambiente</label>
+							<select id="rl-ambiente">${AMBIENTES}</select></div>
+						<div class="field compact"><label for="rl-periodo">Período</label>
+							<select id="rl-periodo">${PERIODOS}<option value="datas">Escolher datas</option></select></div>
+						<div class="field compact" data-datas hidden><label for="rl-de">De</label><input id="rl-de" type="date"></div>
+						<div class="field compact" data-datas hidden><label for="rl-ate">Até</label><input id="rl-ate" type="date"></div>
+						<div class="field compact" data-datas hidden><label>&nbsp;</label><button type="submit" class="secondary">Aplicar</button></div>
+					</form>
+				</div>
+				<p id="rl-erro" class="alert" role="alert" hidden></p>
+				<p id="rl-lendo" class="notice warning" hidden></p>
+
+				<section class="card">
+					<div class="card-head">
+						<h2>Exportar os XML do período</h2>
+						<span id="rl-periodo-texto" class="muted small"></span>
+					</div>
+					<p>Um arquivo ZIP com os XML organizados em pastas e uma planilha de resumo (número, chave, destinatário, situação, valor e impostos de cada nota).</p>
+					<form id="ex-form">
+						<div class="checks">
+							<label class="check"><input type="checkbox" id="ex-emitidas" checked> Notas emitidas (NFS-e, NF-e e NFC-e)</label>
+							<label class="check"><input type="checkbox" id="ex-eventos" checked> Eventos: cancelamento e carta de correção</label>
+							<label class="check"><input type="checkbox" id="ex-inutilizacoes" checked> Inutilizações de numeração</label>
+							<label class="check"><input type="checkbox" id="ex-recebidas" checked> Notas recebidas, com as manifestações</label>
+						</div>
+						<button type="submit" class="primary">Gerar arquivos</button>
+					</form>
+					<p id="ex-message" role="status"></p>
+					<div id="ex-resultado" hidden>
+						<p id="ex-resumo" class="small"></p>
+						<div id="ex-links" class="row"></div>
+						<p id="ex-validade" class="hint"></p>
+					</div>
+				</section>
+
+				<div id="rl-kpis" class="metrics"></div>
+				<div class="settings">
+					<section class="card flush">
+						<div class="card-head pad"><h2>Impostos e totais</h2><span class="muted small">Notas autorizadas</span></div>
+						<div class="table-wrap">
+							<table class="data">
+								<thead><tr><th>Total</th><th class="num">Emitidas</th><th class="num">Recebidas</th></tr></thead>
+								<tbody id="rl-impostos"></tbody>
+							</table>
+						</div>
+						<p class="hint pad">Das notas recebidas, entram só as que já têm o XML completo. IBS e CBS da NFS-e ainda não são lidos.</p>
+					</section>
+					<section class="card flush">
+						<div class="card-head pad"><h2>Por situação</h2><span class="muted small">Notas emitidas</span></div>
+						<div class="table-wrap">
+							<table class="data">
+								<thead><tr><th>Documento</th><th>Situação</th><th class="num">Notas</th><th class="num">Valor</th></tr></thead>
+								<tbody id="rl-situacoes"></tbody>
+							</table>
+						</div>
+					</section>
+					<section class="card flush">
+						<div class="card-head pad"><h2>Por CFOP</h2><span class="muted small">Notas emitidas</span></div>
+						<div class="table-wrap">
+							<table class="data">
+								<thead><tr><th>CFOP</th><th class="num">Notas</th><th class="num">Valor dos itens</th></tr></thead>
+								<tbody id="rl-cfops"></tbody>
+							</table>
+						</div>
+					</section>
+					<section class="card flush">
+						<div class="card-head pad"><h2>Por natureza da operação</h2><span class="muted small">Notas emitidas</span></div>
+						<div class="table-wrap">
+							<table class="data">
+								<thead><tr><th>Natureza</th><th class="num">Notas</th><th class="num">Valor</th></tr></thead>
+								<tbody id="rl-naturezas"></tbody>
+							</table>
+						</div>
+					</section>
+					<section class="card flush">
+						<div class="card-head pad"><h2>Maiores destinatários</h2><span class="muted small">Notas emitidas</span></div>
+						<div class="table-wrap">
+							<table class="data">
+								<thead><tr><th>Destinatário</th><th class="num">Notas</th><th class="num">Valor</th></tr></thead>
+								<tbody id="rl-destinatarios"></tbody>
+							</table>
+						</div>
+					</section>
+					<section class="card flush">
+						<div class="card-head pad"><h2>Maiores fornecedores</h2><span class="muted small">Notas recebidas</span></div>
+						<div class="table-wrap">
+							<table class="data">
+								<thead><tr><th>Emitente</th><th class="num">Notas</th><th class="num">Valor</th></tr></thead>
+								<tbody id="rl-emitentes"></tbody>
+							</table>
+						</div>
+					</section>
 				</div>
 			</section>
 

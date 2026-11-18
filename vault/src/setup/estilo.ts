@@ -163,6 +163,10 @@ form > .primary, form > .secondary { margin-top: 14px; }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .card-head h2 { margin: 0; }
 .card-head.pad { padding: 18px 20px 0; }
+.hint.pad { margin: 0; padding: 12px 20px 16px; }
+.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 18px; margin-bottom: 4px; }
+.vazio { color: var(--muted); }
+a.secondary, a.primary { text-decoration: none; }
 .settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .settings .card { margin: 0; }
 .settings .card.wide { grid-column: 1 / -1; }

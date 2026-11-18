@@ -687,6 +687,114 @@ export const SETUP_JS = String.raw`(function () {
 		}
 	}
 
+	// ---------- Relatórios e exportação ----------
+
+	var TOTAIS = [
+		["produtos", "Produtos"], ["servicos", "Serviços"], ["desconto", "Descontos"], ["frete", "Frete"],
+		["icms", "ICMS"], ["icmsSt", "ICMS ST"], ["fcp", "FCP"], ["ipi", "IPI"], ["pis", "PIS"], ["cofins", "COFINS"],
+		["ii", "Imposto de importação"], ["iss", "ISS"], ["ibs", "IBS"], ["cbs", "CBS"], ["is", "Imposto Seletivo"]
+	];
+	var relendo = null;
+
+	// Preenche uma tabela; sem linhas, mostra uma só dizendo que não há nada.
+	function tabela(id, linhas, colunas) {
+		var corpo = $(id);
+		clear(corpo);
+		if (linhas.length === 0) corpo.appendChild(el("tr", {}, [el("td", { class: "vazio", colspan: String(colunas), text: "Nada no período." })]));
+		linhas.forEach(function (celulas) {
+			corpo.appendChild(el("tr", {}, celulas.map(function (c) {
+				return Array.isArray(c) ? el("td", { class: "num", text: c[0] }) : el("td", { text: c });
+			})));
+		});
+	}
+
+	// Período do relatório; null (com o aviso na tela) quando as datas escolhidas estão incompletas.
+	function periodoDoRelatorio() {
+		var p = periodo("rl");
+		if (!p.de || !p.ate) {
+			erro("rl-erro", "Escolha a data inicial e a data final.");
+			return null;
+		}
+		return { ambiente: $("rl-ambiente").value, de: p.de, ate: p.ate };
+	}
+
+	async function renderRelatorio() {
+		erro("rl-erro", "");
+		if (relendo) clearTimeout(relendo);
+		var p = periodoDoRelatorio();
+		if (!p) return;
+		var r;
+		try {
+			r = await api("GET", "/admin/painel/relatorio" + consulta(p));
+		} catch (err) {
+			return erro("rl-erro", err.message);
+		}
+		var e = r.emitidas;
+		var rc = r.recebidas;
+		$("rl-periodo-texto").textContent = dia(r.periodo.de + "T12:00:00") + " a " + dia(r.periodo.ate + "T12:00:00") + " · " + (r.ambiente === "producao" ? "produção" : "homologação");
+		// Enquanto houver XML por ler, os totais de impostos estão incompletos: o cofre continua e a tela se atualiza.
+		$("rl-lendo").hidden = r.notasPorLer === 0;
+		$("rl-lendo").textContent = "Lendo os XML do período para somar os impostos: " + plural(r.notasPorLer, "nota ainda por ler", "notas ainda por ler") + ". Os totais abaixo se completam sozinhos.";
+		if (r.notasPorLer > 0) relendo = setTimeout(function () { if (telaAtual() === "relatorios") renderRelatorio(); }, 1500);
+
+		var kpis = $("rl-kpis");
+		clear(kpis);
+		var im = e.autorizadas.impostos;
+		kpis.appendChild(indicador("Valor autorizado", dinheiro(e.autorizadas.valor), plural(e.autorizadas.quantidade, "nota emitida", "notas emitidas"), true));
+		kpis.appendChild(indicador("ICMS e ICMS ST", dinheiro(im.icms + im.icmsSt), "Notas emitidas autorizadas"));
+		kpis.appendChild(indicador("IBS, CBS e Imposto Seletivo", dinheiro(im.ibs + im.cbs + im.is), "Notas emitidas autorizadas"));
+		kpis.appendChild(indicador("Recebidas", dinheiro(rc.autorizadas.valor), plural(rc.autorizadas.quantidade, "nota", "notas") + ", " + rc.autorizadas.comXml + " com o XML completo"));
+
+		tabela("rl-impostos", [["Valor total das notas", [dinheiro(e.autorizadas.valor)], [dinheiro(rc.autorizadas.valor)]]].concat(TOTAIS.map(function (t) {
+			return [t[1], [dinheiro(im[t[0]])], [dinheiro(rc.autorizadas.impostos[t[0]])]];
+		})), 3);
+		tabela("rl-situacoes", e.porSituacao.map(function (s) {
+			return [MODELOS[s.modelo] || s.modelo, (SITUACOES[s.situacao] || [s.situacao])[0], [String(s.quantidade)], [dinheiro(s.valor)]];
+		}), 4);
+		tabela("rl-cfops", e.porCfop.map(function (c) { return [c.cfop, [String(c.quantidade)], [dinheiro(c.valor)]]; }), 3);
+		tabela("rl-naturezas", e.porNatureza.map(function (n) { return [n.natureza, [String(n.quantidade)], [dinheiro(n.valor)]]; }), 3);
+		var pessoa = function (x) { return [(x.nome || "Não identificado") + (x.documento ? " · " + documento(x.documento) : ""), [String(x.quantidade)], [dinheiro(x.valor)]]; };
+		tabela("rl-destinatarios", e.porDestinatario.map(pessoa), 3);
+		tabela("rl-emitentes", rc.porEmitente.map(pessoa), 3);
+	}
+
+	var exportando = null;
+	function mostrarExportacao(x) {
+		$("ex-resultado").hidden = x.situacao !== "pronta";
+		if (x.situacao !== "pronta") {
+			message("ex-message", "Preparando: lendo os XML para a planilha (" + plural(x.notasPorLer, "nota por ler", "notas por ler") + ")…");
+			exportando = setTimeout(async function () {
+				try {
+					mostrarExportacao(await api("GET", "/admin/painel/exportacoes/" + encodeURIComponent(x.id)));
+				} catch (err) {
+					message("ex-message", err.message, "error");
+				}
+			}, 1500);
+			return;
+		}
+		message("ex-message", "");
+		var c = x.conteudo;
+		var partes = [];
+		var emitidas = (c.nfse || 0) + (c.nfe || 0) + (c.nfce || 0);
+		if (emitidas) partes.push(plural(emitidas, "nota emitida", "notas emitidas"));
+		if (c.eventos) partes.push(plural(c.eventos, "evento", "eventos"));
+		if (c.inutilizacoes) partes.push(plural(c.inutilizacoes, "inutilização", "inutilizações"));
+		if (c.recebidas) partes.push(plural(c.recebidas, "nota recebida", "notas recebidas"));
+		if (c.manifestacoes) partes.push(plural(c.manifestacoes, "manifestação", "manifestações"));
+		if (c.eventosRecebidos) partes.push(plural(c.eventosRecebidos, "evento de nota recebida", "eventos de notas recebidas"));
+		$("ex-resumo").textContent = x.arquivos === 0
+			? "Não há XML neste período com o que foi marcado. A planilha sai só com o cabeçalho."
+			: plural(x.arquivos, "arquivo", "arquivos") + ": " + partes.join(", ") + ".";
+		var links = $("ex-links");
+		clear(links);
+		x.partes.forEach(function (p) {
+			links.appendChild(el("a", { class: "primary", href: p.url, download: p.nome, text: x.partes.length > 1 ? "Baixar ZIP, parte " + p.parte + " de " + x.partes.length : "Baixar ZIP" }));
+		});
+		links.appendChild(el("a", { class: "secondary", href: x.planilha.url, download: x.planilha.nome, text: "Baixar só a planilha" }));
+		$("ex-validade").textContent = "Os links valem até " + hora(x.linksValemAte) + ". Depois disso, gere de novo." +
+			(x.partes.length > 1 ? " O ZIP sai em partes de até 400 arquivos; a planilha vai dentro da primeira." : "");
+	}
+
 	// ---------- Configuração ----------
 
 	function renderCertificate() {
@@ -838,6 +946,7 @@ export const SETUP_JS = String.raw`(function () {
 		"visao-geral": ["Visão geral", renderVisao],
 		emitidas: ["Notas emitidas", renderEmitidas],
 		recebidas: ["Notas recebidas", renderRecebidas],
+		relatorios: ["Relatórios e exportação", renderRelatorio],
 		configuracao: ["Configuração", renderConfiguracao],
 		chaves: ["Chaves de API", renderKeys],
 		atualizacao: ["Atualização", function () { return renderUpdate(false); }],
@@ -909,6 +1018,7 @@ export const SETUP_JS = String.raw`(function () {
 			atualizacao = await api("GET", "/admin/atualizacao").catch(function () { return null; });
 			$("secret").value = "";
 			$("vg-ambiente").value = state.allowProduction ? "producao" : "homologacao";
+			$("rl-ambiente").value = $("vg-ambiente").value;
 			$("login").hidden = true;
 			$("panel").hidden = false;
 			renderTopo();
@@ -949,6 +1059,32 @@ export const SETUP_JS = String.raw`(function () {
 		$("rc-filtros").querySelectorAll("[data-datas]").forEach(function (campo) { campo.hidden = true; });
 		rcPagina = 1;
 		renderRecebidas();
+	});
+
+	ligarDatas("rl");
+	$("rl-ambiente").addEventListener("change", renderRelatorio);
+	$("rl-periodo").addEventListener("change", function () { if ($("rl-periodo").value !== "datas") renderRelatorio(); });
+	$("rl-filtros").addEventListener("submit", function (ev) { ev.preventDefault(); renderRelatorio(); });
+
+	$("ex-form").addEventListener("submit", async function (ev) {
+		ev.preventDefault();
+		if (exportando) clearTimeout(exportando);
+		var p = periodoDoRelatorio();
+		if (!p) return;
+		var incluir = [];
+		if ($("ex-emitidas").checked) incluir.push("nfse", "nfe", "nfce");
+		if ($("ex-eventos").checked) incluir.push("eventos");
+		if ($("ex-inutilizacoes").checked) incluir.push("inutilizacoes");
+		if ($("ex-recebidas").checked) incluir.push("recebidas");
+		if (incluir.length === 0) return message("ex-message", "Marque ao menos um tipo de arquivo.", "error");
+		$("ex-resultado").hidden = true;
+		message("ex-message", "Reunindo os arquivos do período…");
+		try {
+			var x = await busy(ev.submitter, function () { return api("POST", "/admin/painel/exportacoes", { ambiente: p.ambiente, de: p.de, ate: p.ate, incluir: incluir }); });
+			mostrarExportacao(x);
+		} catch (err) {
+			message("ex-message", err.message, "error");
+		}
 	});
 
 	// ---------- Ações da configuração ----------

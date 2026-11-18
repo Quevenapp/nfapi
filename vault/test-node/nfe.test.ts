@@ -469,7 +469,7 @@ describe("contrato da API", () => {
 			/"(serie_[a-z_]+)"/g,
 		];
 		const encontrados = new Set<string>();
-		for (const arquivo of ["api-nfe.ts", "api-nfse.ts", "api-recebidas.ts", "recebidas/servico.ts", "emissao/nfe.ts", "emissao/nfse.ts", "emissao/banco.ts", "operacoes.ts"]) {
+		for (const arquivo of ["api-nfe.ts", "api-nfse.ts", "api-recebidas.ts", "api-relatorios.ts", "recebidas/servico.ts", "emissao/nfe.ts", "emissao/nfse.ts", "emissao/banco.ts", "operacoes.ts"]) {
 			const fonte = fs.readFileSync(path.join(src, arquivo), "utf8");
 			// Em emissao/nfe.ts, recusar() é da inutilização; nas rotas, é do painel (/admin).
 			const lista = arquivo === "emissao/nfe.ts" ? [...padroes, /recusar\(\d+, "([a-z_]+)"/g] : padroes;

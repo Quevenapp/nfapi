@@ -10,6 +10,7 @@ import { CancelamentoNfe, CartaCorrecao, InutilizacaoInput, NfceInput, NfeInput 
 import { CancelamentoInput, NfseInput } from "./nfse";
 import { VAULT_VERSION } from "./protocol";
 import { ConsultarChaveInput, ManifestacaoInput, ManifestacaoPorChaveInput, SincronizarInput } from "./recebidas/schema";
+import { ExportacaoBase, TIPOS } from "./relatorios-schema";
 
 type Json = Record<string, unknown>;
 
@@ -310,6 +311,7 @@ export const CODIGOS_DE_ERRO: Record<string, { status: number; quando: string }>
 	nota_nao_localizada: { status: 422, quando: "Consulta por chave: o Ambiente Nacional não tem a nota disponível para o CNPJ (mais de 90 dias, chave de outra empresa ou nota ainda não recebida por ele)." },
 	consulta_rejeitada: { status: 422, quando: "O Ambiente Nacional rejeitou a consulta por chave; `mensagens` traz cStat e xMotivo." },
 	consumo_indevido: { status: 429, quando: "O Ambiente Nacional bloqueou as consultas do CNPJ por uma hora (cStat 656). Nada sai do cofre até o horário em `mensagem`." },
+	link_invalido: { status: 403, quando: "Download da exportação: o link venceu, foi alterado ou a exportação não existe mais. Consulte a exportação para receber links novos." },
 	limite_de_consultas: { status: 429, quando: "Consulta por chave: o cofre atingiu 18 consultas em uma hora (o Ambiente Nacional bloqueia a partir de 20)." },
 	sem_resposta_conclusiva: { status: 502, quando: "A resposta do governo se perdeu ou não foi conclusiva. Na NF-e e NFC-e, chame /consultar; em qualquer documento, repetir com a mesma referência consulta antes de reenviar. Na NFC-e, `contingencia: \"automatica\"` troca este erro por uma nota em contingência." },
 	sem_conexao: { status: 200, quando: "Só em GET /v1/sefaz/status, dentro de `mensagem.codigo`: não foi possível falar com a SEFAZ." },
@@ -429,6 +431,202 @@ const paginaDe = (campo: string, item: Json) => ({
 		haMais: { type: "boolean" },
 	},
 });
+
+// ---------- Relatórios e exportação por período ----------
+
+const valor = { type: "number", description: "Em reais." };
+const fatia = { quantidade: { type: "integer", description: "Quantidade de notas." }, valor };
+const SITUACAO_DA_EMISSAO = { type: "string", enum: ["processando", "autorizada", "rejeitada", "denegada", "contingencia", "erro", "indefinida", "cancelada"] };
+const NotaEmitida = {
+	type: "object",
+	description: "Uma nota emitida, de qualquer dos três documentos, como aparece nas listagens.",
+	properties: {
+		id: texto,
+		modelo: { type: "string", enum: ["nfse", "nfe", "nfce"] },
+		ambiente: AMBIENTE,
+		referencia: textoOuNulo,
+		serie: texto,
+		numero: { ...textoOuNulo, description: "Número da nota. Na NFS-e, o número da nota autorizada (nulo antes disso); o da declaração está em `numeroDps`." },
+		numeroDps: { type: ["integer", "null"] },
+		situacao: SITUACAO_DA_EMISSAO,
+		chaveAcesso: textoOuNulo,
+		protocolo: textoOuNulo,
+		emitidaEm: dataHora,
+		valor: { type: ["number", "null"] },
+		destinatario: {
+			type: ["object", "null"],
+			description: "Destinatário (NF-e, NFC-e) ou tomador (NFS-e); nulo quando a nota não identifica ninguém.",
+			properties: { documento: textoOuNulo, nome: textoOuNulo },
+		},
+		xmlDisponivel: { type: "boolean" },
+	},
+};
+const ValoresFiscais = {
+	type: "object",
+	description: "Totais lidos dos XML, em reais. `total` é o valor do documento (vNF; na NFS-e, o valor líquido).",
+	properties: Object.fromEntries(
+		["total", "produtos", "servicos", "desconto", "frete", "seguro", "outras", "icms", "icmsSt", "fcp", "ipi", "pis", "cofins", "ii", "iss", "ibs", "cbs", "is"].map((campo) => [campo, { type: "number" }]),
+	),
+};
+const porCfop = { type: "array", description: "Valor dos itens por CFOP; `quantidade` conta as notas em que o CFOP aparece.", items: { type: "object", properties: { cfop: texto, ...fatia } } };
+const porPessoa = { type: "array", description: "Os 50 de maior valor.", items: { type: "object", properties: { documento: textoOuNulo, nome: textoOuNulo, ...fatia } } };
+const Relatorio = {
+	type: "object",
+	description: "Totais de um período, pelos dias de emissão. Só a nota autorizada entra nos totais fiscais: a cancelada e a recusada aparecem apenas em `porSituacao`.",
+	properties: {
+		ambiente: AMBIENTE,
+		periodo: { type: "object", properties: { de: texto, ate: texto } },
+		notasPorLer: {
+			type: "integer",
+			description:
+				"Notas do período cujo XML o cofre ainda não leu. O cofre lê até 150 por pedido e guarda o resultado; enquanto não for zero, os impostos, o CFOP e a natureza estão incompletos. Peça de novo.",
+		},
+		emitidas: {
+			type: "object",
+			properties: {
+				porSituacao: { type: "array", items: { type: "object", properties: { modelo: { type: "string", enum: ["nfse", "nfe", "nfce"] }, situacao: SITUACAO_DA_EMISSAO, ...fatia } } },
+				autorizadas: { type: "object", properties: { ...fatia, impostos: ref("ValoresFiscais") } },
+				porDia: { type: "array", items: { type: "object", properties: { dia: { type: "string", description: "AAAA-MM-DD." }, ...fatia } } },
+				porCfop,
+				porNatureza: { type: "array", items: { type: "object", properties: { natureza: { type: "string", description: "Natureza da operação; na NFS-e, o código de tributação nacional do serviço." }, ...fatia } } },
+				porDestinatario: porPessoa,
+			},
+		},
+		recebidas: {
+			type: "object",
+			properties: {
+				porSituacao: { type: "array", items: { type: "object", properties: { situacao: texto, ...fatia } } },
+				autorizadas: {
+					type: "object",
+					description: "As autorizadas em que o titular é o destinatário. `impostos` soma só as que já têm o XML completo (`comXml`).",
+					properties: { ...fatia, comXml: { type: "integer" }, impostos: ref("ValoresFiscais") },
+				},
+				comoTerceiro: { type: "integer", description: "Notas em que o titular é só transportador ou autorizado a baixar o XML; ficam fora dos totais." },
+				porCfop,
+				porEmitente: porPessoa,
+			},
+		},
+	},
+};
+const linkDeDownload = { type: "string", format: "uri", description: "Link assinado, com prazo curto: baixa direto do cofre, sem chave de API." };
+const Exportacao = {
+	type: "object",
+	description: "Exportação dos XML de um período, com a planilha de resumo.",
+	properties: {
+		id: texto,
+		ambiente: AMBIENTE,
+		periodo: { type: "object", properties: { de: texto, ate: texto } },
+		incluir: { type: "array", items: { type: "string", enum: [...TIPOS] } },
+		situacao: { type: "string", enum: ["preparando", "pronta"], description: "`preparando`: o cofre ainda lê os XML para a planilha (até 200 por consulta); consulte de novo em alguns segundos. `pronta`: os links valem." },
+		notasPorLer: { type: "integer" },
+		arquivos: { type: "integer", description: "Quantidade de XML na exportação." },
+		conteudo: {
+			type: "object",
+			description: "Quantos arquivos de cada tipo entraram: `nfse`, `nfe`, `nfce`, `eventos`, `inutilizacoes`, `recebidas`, `eventosRecebidos`, `manifestacoes`.",
+			additionalProperties: { type: "integer" },
+		},
+		partes: {
+			type: "array",
+			description: "O ZIP sai em partes de até 400 arquivos, cada uma montada na hora do download. A planilha vai dentro da primeira.",
+			items: { type: "object", properties: { parte: { type: "integer" }, nome: texto, url: linkDeDownload } },
+		},
+		planilha: { type: ["object", "null"], description: "Planilha de resumo (.xlsx), com uma aba para as emitidas e outra para as recebidas.", properties: { nome: texto, url: linkDeDownload } },
+		linksValemAte: { type: ["string", "null"], format: "date-time", description: "Depois deste instante os links param de valer; consultar a exportação devolve links novos." },
+		criadaEm: dataHora,
+		expiraEm: { ...dataHora, description: "A exportação e os arquivos dela são apagados 24 horas depois de criada." },
+	},
+};
+const periodoNaConsulta = [
+	{ name: "ambiente", in: "query", required: true, schema: AMBIENTE },
+	{ name: "de", in: "query", required: true, schema: texto, description: "Primeiro dia de emissão, inclusive (AAAA-MM-DD)." },
+	{ name: "ate", in: "query", required: true, schema: texto, description: "Último dia de emissão, inclusive. O período vai até 366 dias." },
+];
+
+function rotasRelatorios(): Json {
+	const tags = ["Relatórios e exportação"];
+	const idDaExportacao = { name: "id", in: "path", required: true, schema: texto, description: "Id da exportação (`exp_...`)." };
+	const exportacao = ref("Exportacao");
+	return {
+		"/v1/notas": {
+			get: {
+				tags,
+				summary: "Lista as notas emitidas dos três documentos, com filtros",
+				description: "Da emissão mais recente para a mais antiga. `total` e `valor` somam todas as notas do filtro, não só as desta página.",
+				parameters: [
+					{ name: "de", in: "query", schema: texto, description: "Primeiro dia de emissão (AAAA-MM-DD)." },
+					{ name: "ate", in: "query", schema: texto, description: "Último dia de emissão (AAAA-MM-DD)." },
+					{ name: "modelo", in: "query", schema: { type: "string", enum: ["nfse", "nfe", "nfce"] } },
+					{ name: "situacao", in: "query", schema: SITUACAO_DA_EMISSAO },
+					{ name: "ambiente", in: "query", schema: AMBIENTE },
+					{ name: "busca", in: "query", schema: texto, description: "Número da nota, chave de acesso, referência, ou parte do nome ou do documento do destinatário (documento com cinco dígitos ou mais)." },
+					{ name: "pagina", in: "query", schema: { type: "integer", default: 1, minimum: 1 } },
+					{ name: "porPagina", in: "query", schema: { type: "integer", default: 50, maximum: 200 } },
+				],
+				responses: {
+					"200": resposta("Notas.", { type: "object", properties: { notas: { type: "array", items: ref("NotaEmitida") }, total: { type: "integer" }, valor, pagina: { type: "integer" }, porPagina: { type: "integer" } } }),
+					...erros(400, 401),
+				},
+			},
+		},
+		"/v1/relatorios/notas": {
+			get: {
+				tags,
+				summary: "Totais do período: por situação, dia, CFOP, natureza e destinatário, com os impostos",
+				description:
+					"Os impostos (inclusive IBS, CBS e Imposto Seletivo), o CFOP e a natureza vêm dos XML arquivados. O cofre os lê na primeira vez e guarda; veja `notasPorLer`. " +
+					"Das notas recebidas, só entram nos impostos as que já têm o XML completo. IBS e CBS da NFS-e ainda não são lidos.",
+				parameters: periodoNaConsulta,
+				responses: { "200": resposta("O relatório.", ref("Relatorio")), ...erros(400, 401, 403) },
+			},
+		},
+		"/v1/exportacoes": {
+			post: {
+				tags,
+				summary: "Cria a exportação dos XML de um período",
+				description:
+					"Reúne os XML das notas emitidas (e os eventos de cancelamento e carta de correção), das inutilizações e das notas recebidas (com eventos e manifestações) em pastas, mais a planilha de resumo. " +
+					"O período é pelo dia de emissão da nota; os eventos acompanham a nota, seja qual for a data deles. " +
+					"Notas rejeitadas não têm XML fiscal e aparecem só na planilha. " +
+					"Na maioria dos casos a resposta já vem `pronta`; com muitas notas ainda não lidas, vem `preparando` e avança a cada `GET`. " +
+					"Entregue os links ao navegador do usuário: o arquivo sai direto do cofre.",
+				requestBody: corpo(esquema(ExportacaoBase), { ambiente: "producao", de: "2026-11-01", ate: "2026-11-30" }),
+				responses: { "201": resposta("Criada.", exportacao), ...erros(400, 401, 403) },
+			},
+			get: {
+				tags,
+				summary: "Lista as exportações ainda válidas",
+				responses: { "200": resposta("Exportações.", { type: "object", properties: { exportacoes: { type: "array", items: exportacao } } }), ...erros(401) },
+			},
+		},
+		"/v1/exportacoes/{id}": {
+			get: {
+				tags,
+				summary: "Consulta a exportação e devolve links novos",
+				description: "Enquanto a situação for `preparando`, cada consulta leva o trabalho adiante. Depois de 24 horas a exportação some e a resposta é 404.",
+				parameters: [idDaExportacao],
+				responses: { "200": resposta("A exportação.", exportacao), ...erros(401, 404) },
+			},
+		},
+		"/exportacoes/{id}/{arquivo}": {
+			get: {
+				tags,
+				summary: "Baixa um arquivo da exportação pelo link assinado",
+				description: "É o endereço que vem em `partes[].url` e em `planilha.url`; não monte este endereço à mão. Não leva chave de API: vale a assinatura, até `linksValemAte`.",
+				security: [],
+				parameters: [
+					idDaExportacao,
+					{ name: "arquivo", in: "path", required: true, schema: texto, description: "`parte-1`, `parte-2`... ou `planilha`." },
+					{ name: "expira", in: "query", required: true, schema: { type: "integer" } },
+					{ name: "assinatura", in: "query", required: true, schema: texto },
+				],
+				responses: {
+					"200": { description: "O arquivo.", content: { "application/zip": {}, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {} } },
+					"403": resposta("Link vencido, adulterado ou de exportação que não existe mais (link_invalido).", ref("Erro")),
+				},
+			},
+		},
+	};
+}
 
 function rotasRecebidas(): Json {
 	const tags = ["NF-e recebidas"];
@@ -688,11 +886,12 @@ export function contratoOpenApi(): Json {
 		},
 		servers: [{ url: "https://{cofre}", variables: { cofre: { default: "nfapi-cofre.sua-conta.workers.dev", description: "Endereço do seu cofre." } } }],
 		security: [{ chaveDeApi: [] }],
-		tags: [{ name: "NF-e" }, { name: "NFC-e" }, { name: "NFS-e" }, { name: "NF-e recebidas" }, { name: "Numeração" }, { name: "Cofre" }],
+		tags: [{ name: "NF-e" }, { name: "NFC-e" }, { name: "NFS-e" }, { name: "NF-e recebidas" }, { name: "Relatórios e exportação" }, { name: "Numeração" }, { name: "Cofre" }],
 		paths: {
 			...rotasNfe("nfe", "NF-e", "PedidoNfe", EXEMPLO_NFE),
 			...rotasNfe("nfce", "NFC-e", "PedidoNfce", EXEMPLO_NFCE),
 			...rotasRecebidas(),
+			...rotasRelatorios(),
 			"/v1/nfse": {
 				post: {
 					tags: ["NFS-e"],
@@ -831,6 +1030,10 @@ export function contratoOpenApi(): Json {
 				DocumentoDistribuido,
 				Distribuicao,
 				Sincronizacao,
+				NotaEmitida,
+				ValoresFiscais,
+				Relatorio,
+				Exportacao,
 				InutilizacaoRegistrada: {
 					type: "object",
 					properties: {

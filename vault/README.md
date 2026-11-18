@@ -40,6 +40,7 @@ O painel (`/setup`) é a tela de trabalho do emitente, além de ser onde o cofre
 
 - **Visão geral.** As notas do período por documento e situação, o valor autorizado por dia, as notas recebidas e a lista do que precisa de atenção: certificado perto de vencer, notas sem resposta, NFC-e em contingência, consulta bloqueada, versão nova.
 - **Notas emitidas.** Listagem com filtro por período, documento, situação e ambiente, e busca por número, chave de acesso, referência, nome ou documento do destinatário. Cada nota abre com os dados, as mensagens do governo, os arquivos (XML, eventos, DANFE em PDF) e o cancelamento.
+- **Relatórios e exportação.** Os totais do período com os impostos, por CFOP, natureza, destinatário e fornecedor, e o botão que gera o ZIP dos XML com a planilha para o contador.
 - **Notas recebidas.** O estado da consulta ao Ambiente Nacional, a listagem com os mesmos filtros e, em cada nota, os eventos, o histórico de manifestações, os arquivos e a manifestação do destinatário.
 - **Configuração, Chaves de API, Atualização e Atividade.** O que antes ficava na tela única.
 
@@ -70,6 +71,9 @@ Os três documentos têm o mesmo desenho; `{doc}` é `nfse`, `nfe` (modelo 55) o
 | `POST /v1/nfe-recebidas/:id/manifestar` | Manifestação do destinatário: ciência, confirmação, desconhecimento ou operação não realizada |
 | `GET /v1/nfe-recebidas/:id/xml` e `/danfe` | XML completo e DANFE da nota recebida, depois da manifestação |
 | `GET /v1/distribuicao` | Onde a consulta das notas recebidas parou e quando sai a próxima |
+| `GET /v1/notas` | Notas emitidas dos três documentos, com filtro por período, documento, situação e busca |
+| `GET /v1/relatorios/notas` | Totais de um período: por situação, dia, CFOP, natureza e destinatário, com os impostos |
+| `POST /v1/exportacoes` | Exporta os XML de um período num ZIP, com planilha de resumo, por link que expira |
 | `POST /v1/inutilizacoes` | NF-e e NFC-e: inutiliza uma faixa de numeração (extinta em SP, AC e BA) |
 | `GET /v1/series` | Séries cadastradas e o próximo número de cada uma |
 | `GET /v1/cofre` | Versão, atualização pendente, validade do certificado e ambientes liberados |
@@ -143,6 +147,18 @@ O cofre baixa do Ambiente Nacional da NF-e as notas que outras empresas emitiram
 - **Consulta por chave.** `POST /v1/distribuicao/consultar-chave` busca uma nota específica dos últimos 90 dias. O serviço aceita 20 por hora; o cofre para em 18.
 - **Tudo o que chegou.** `GET /v1/distribuicao/documentos` lista os documentos na ordem de chegada, inclusive os que não são nota recebida, como a manifestação que um cliente registrou numa nota emitida pelo titular.
 - **Ainda não há:** aviso (webhook) quando chega nota, e CT-e ou NFS-e recebidos.
+
+### Relatórios e exportação por período
+
+Servem para acompanhar o mês e para mandar os arquivos ao contador. Estão também no painel, em "Relatórios e exportação".
+
+- **Relatório.** `GET /v1/relatorios/notas?ambiente=producao&de=2026-11-01&ate=2026-11-30` soma as notas pelo dia de emissão (até 366 dias): por situação, por dia, por CFOP, por natureza e por destinatário, com os totais de ICMS, ICMS ST, FCP, IPI, PIS, COFINS, II, ISS, IBS, CBS e Imposto Seletivo. Só a nota autorizada entra nos totais fiscais.
+- **De onde vêm os impostos.** Dos XML arquivados. O cofre lê cada nota uma vez e guarda o resumo; `notasPorLer` diz quantas faltam (até 150 por pedido), e enquanto não for zero os totais estão incompletos. IBS e CBS da NFS-e ainda não são lidos.
+- **Notas recebidas no relatório.** Entram as autorizadas em que o titular é o destinatário; os impostos somam só as que já têm o XML completo.
+- **Exportação.** `POST /v1/exportacoes` com `ambiente`, `de`, `ate` e, se quiser, `incluir` (`nfse`, `nfe`, `nfce`, `eventos`, `inutilizacoes`, `recebidas`). A resposta traz os links de download: o ZIP em partes de até 400 arquivos e a planilha `.xlsx`, que também vai dentro da primeira parte. Os eventos acompanham a nota, seja qual for a data deles; nota rejeitada não tem XML fiscal e aparece só na planilha.
+- **Links com prazo.** Cada link vale 30 minutos e não leva chave de API: é para o navegador do usuário baixar direto do cofre. `GET /v1/exportacoes/:id` devolve links novos. A exportação some 24 horas depois de criada.
+- **Por que em partes.** O Worker tem limite de operações por requisição, então o ZIP é escrito durante o download, parte a parte, e nada fica montado no cofre além da lista dos arquivos e da planilha.
+- **Pastas do ZIP.** `emitidas/nfe`, `emitidas/nfce`, `emitidas/nfse` (cada uma com `eventos/`; a NFS-e com `dps/`), `inutilizacoes`, `recebidas` (com `resumos/`, `eventos/` e `manifestacoes/`).
 
 ### NFS-e
 

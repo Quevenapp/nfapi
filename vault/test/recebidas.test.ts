@@ -581,6 +581,196 @@ describe("painel: notas recebidas", () => {
 	});
 });
 
+/** Lê um ZIP inteiro: nome e conteúdo de cada entrada, pelo diretório central. */
+async function abrirZip(zip: Uint8Array): Promise<Record<string, string>> {
+	const v = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+	const fim = zip.length - 22;
+	const saida: Record<string, string> = {};
+	let p = v.getUint32(fim + 16, true);
+	for (let i = 0; i < v.getUint16(fim + 10, true); i++) {
+		const [metodo, comprimido, tamanhoDoNome, local] = [v.getUint16(p + 10, true), v.getUint32(p + 20, true), v.getUint16(p + 28, true), v.getUint32(p + 42, true)];
+		const nome = new TextDecoder().decode(zip.subarray(p + 46, p + 46 + tamanhoDoNome));
+		const inicio = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+		const corpo = zip.slice(inicio, inicio + comprimido);
+		const dados = metodo === 8 ? await new Response(new Blob([corpo]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer() : corpo;
+		saida[nome] = new TextDecoder().decode(dados);
+		p += 46 + tamanhoDoNome;
+	}
+	return saida;
+}
+
+describe("relatórios e exportação por período", () => {
+	const HOJE = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
+	const TUDO = "ambiente=homologacao&de=2026-01-01&ate=2026-12-31";
+	/** Duas NF-e emitidas e duas recebidas: uma com o XML completo, outra cancelada. */
+	async function cenario() {
+		await admin("PUT", "/admin/series", { modelo: "nfe", ambiente: "homologacao", serie: 1 });
+		const a = (await cliente("POST", "/v1/nfe", EXEMPLO_NFE)).json;
+		const b = (await cliente("POST", "/v1/nfe", { ...EXEMPLO_NFE, referencia: "pedido-1002", destinatario: { ...EXEMPLO_NFE.destinatario, cnpj: FORNECEDOR, nome: "Outra Empresa de Teste" } })).json;
+		const [ra, rb] = [chaveDoFornecedor(101), chaveDoFornecedor(102)];
+		an.fila = [
+			{ nsu: 11, schema: "resNFe_v1.01.xsd", xml: resumo(ra) },
+			{ nsu: 12, schema: "resNFe_v1.01.xsd", xml: resumo(rb, { valor: "80.00" }) },
+			{ nsu: 13, schema: "procEventoNFe_v1.00.xsd", xml: cancelamento(rb) },
+		];
+		an.porChave[ra] = notaCompleta(ra);
+		await configurar();
+		await sincronizar();
+		const recebidaA = (await admin("GET", `/admin/painel/recebidas?busca=${ra}`)).json.itens[0];
+		await admin("POST", "/admin/recebidas/manifestar", { id: recebidaA.id, tipo: "ciencia" });
+		return { a, b, ra, rb };
+	}
+
+	it("soma o período por situação, dia, CFOP, natureza e destinatário, com os impostos lidos dos XML", async () => {
+		const { a, b } = await cenario();
+		const r = await cliente("GET", `/v1/relatorios/notas?ambiente=homologacao&de=${HOJE}&ate=${HOJE}`);
+		expect(r.status).toBe(200);
+		expect(r.json).toMatchObject({ ambiente: "homologacao", periodo: { de: HOJE, ate: HOJE }, notasPorLer: 0 });
+		const e = r.json.emitidas;
+		expect(e.porSituacao).toEqual([{ modelo: "nfe", situacao: "autorizada", quantidade: 2, valor: 1400 }]);
+		expect(e.autorizadas).toMatchObject({ quantidade: 2, valor: 1400, impostos: { total: 1400, iss: 0 } });
+		expect(e.autorizadas.impostos.produtos).toBeGreaterThan(0);
+		expect(e.porDia).toEqual([{ dia: HOJE, quantidade: 2, valor: 1400 }]);
+		expect(e.porCfop).toHaveLength(1);
+		expect(e.porCfop[0]).toMatchObject({ cfop: EXEMPLO_NFE.itens[0]?.cfop, quantidade: 2 });
+		expect(e.porNatureza).toEqual([{ natureza: EXEMPLO_NFE.naturezaOperacao, quantidade: 2, valor: 1400 }]);
+		expect(e.porDestinatario.map((d: Json) => [d.documento, d.nome, d.quantidade, d.valor]).sort()).toEqual([["44555666000181", "Outra Empresa de Teste", 1, 700], ["99888777000166", "Cliente Ltda", 1, 700]]);
+		// Recebidas: a cancelada não entra nos totais; só a que tem XML soma impostos.
+		const todas = (await cliente("GET", `/v1/relatorios/notas?${TUDO}`)).json.recebidas;
+		expect(todas.autorizadas).toMatchObject({ quantidade: 1, valor: 1520.75, comXml: 1, impostos: { total: 1520.75 } });
+		expect(todas.porSituacao.map((s: Json) => [s.situacao, s.quantidade]).sort()).toEqual([["autorizada", 1], ["cancelada", 1]]);
+		expect(todas.porEmitente).toEqual([{ documento: FORNECEDOR, nome: "Fornecedor de Teste Ltda", quantidade: 1, valor: 1520.75 }]);
+		// O resumo fiscal fica guardado: a nota não é lida de novo.
+		const guardado = await env.DB.prepare("SELECT fiscal FROM emissions WHERE id = ?").bind(a.id).first<{ fiscal: string }>();
+		expect(JSON.parse(guardado?.fiscal ?? "{}")).toMatchObject({ natureza: EXEMPLO_NFE.naturezaOperacao, valores: { total: 700 } });
+
+		// Período e ambiente.
+		expect((await cliente("GET", "/v1/relatorios/notas?ambiente=producao&de=2026-01-01&ate=2026-12-31")).json.emitidas.autorizadas).toMatchObject({ quantidade: 0, valor: 0 });
+		for (const q of ["ambiente=homologacao&de=2026-11-30&ate=2026-11-01", "ambiente=homologacao&de=2026-02-30&ate=2026-03-31", "ambiente=homologacao&de=2025-01-01&ate=2026-12-31", "de=2026-01-01&ate=2026-01-31", "ambiente=homologacao&de=hoje&ate=2026-01-31"]) {
+			const invalido = await cliente("GET", `/v1/relatorios/notas?${q}`);
+			expect([invalido.status, invalido.json.erro.codigo], q).toEqual([400, "requisicao_invalida"]);
+		}
+		// Chave só de homologação não lê a produção; o painel tem o mesmo relatório.
+		const deTeste = (await admin("POST", "/admin/chaves", { nome: "Testes", escopo: "homologacao" })).json.chave.valor;
+		expect((await cliente("GET", "/v1/relatorios/notas?ambiente=producao&de=2026-01-01&ate=2026-12-31", undefined, deTeste)).json.erro.codigo).toBe("chave_somente_homologacao");
+		expect((await admin("GET", `/admin/painel/relatorio?${TUDO}`)).json.emitidas.autorizadas.quantidade).toBe(2);
+		expect((await admin("GET", "/admin/painel/relatorio?ambiente=homologacao")).status).toBe(400);
+
+		// A listagem unificada, para o sistema cliente.
+		const notas = (await cliente("GET", "/v1/notas?busca=outra%20empresa&ambiente=homologacao")).json;
+		expect(notas).toMatchObject({ total: 1, valor: 700, pagina: 1, porPagina: 50, notas: [{ id: b.id, modelo: "nfe", destinatario: { documento: FORNECEDOR } }] });
+		expect((await cliente("GET", "/v1/notas?modelo=cte")).json.erro.codigo).toBe("requisicao_invalida");
+		expect((await cliente("GET", "/v1/notas?de=ontem")).status).toBe(400);
+	});
+
+	it("exporta os XML do período num ZIP com a planilha, por link que expira", async () => {
+		const { a, b, ra, rb } = await cenario();
+		const criada = await cliente("POST", "/v1/exportacoes", { ambiente: "homologacao", de: "2026-01-01", ate: "2026-12-31" });
+		expect(criada.status).toBe(201);
+		const exp = criada.json;
+		expect(exp).toMatchObject({
+			ambiente: "homologacao", periodo: { de: "2026-01-01", ate: "2026-12-31" }, incluir: ["nfse", "nfe", "nfce", "eventos", "inutilizacoes", "recebidas"],
+			situacao: "pronta", notasPorLer: 0, arquivos: 6, conteudo: { nfe: 2, recebidas: 2, manifestacoes: 1, eventosRecebidos: 1 },
+			planilha: { nome: "resumo-2026-01-01-a-2026-12-31.xlsx" },
+		});
+		expect(exp.partes).toHaveLength(1);
+		expect(exp.partes[0]).toMatchObject({ parte: 1, nome: "notas-2026-01-01-a-2026-12-31.zip" });
+		expect(Date.parse(exp.linksValemAte) - Date.now()).toBeGreaterThan(25 * 60_000);
+		expect(Date.parse(exp.expiraEm) - Date.now()).toBeGreaterThan(23 * 3_600_000);
+
+		// O link baixa sem chave de API.
+		const baixar = (url: string) => app.request(url, {}, env);
+		const zip = await baixar(exp.partes[0].url);
+		expect([zip.status, zip.headers.get("content-type"), zip.headers.get("content-disposition")]).toEqual([200, "application/zip", 'attachment; filename="notas-2026-01-01-a-2026-12-31.zip"']);
+		const arquivos = await abrirZip(new Uint8Array(await zip.arrayBuffer()));
+		expect(Object.keys(arquivos).sort()).toEqual(
+			[
+				`emitidas/nfe/${a.chaveAcesso}-nfe.xml`, `emitidas/nfe/${b.chaveAcesso}-nfe.xml`,
+				`recebidas/${ra}-nfe.xml`, `recebidas/eventos/${rb}-evento-110111-01.xml`, `recebidas/manifestacoes/${ra}-manifestacao-210210-01.xml`, `recebidas/resumos/${rb}-resumo.xml`,
+				"resumo-2026-01-01-a-2026-12-31.xlsx",
+			].sort(),
+		);
+		expect(arquivos[`emitidas/nfe/${a.chaveAcesso}-nfe.xml`]).toBe((await cliente("GET", `/v1/nfe/${a.id}/xml`)).text);
+		expect(arquivos[`recebidas/${ra}-nfe.xml`]).toBe(notaCompleta(ra));
+
+		// A planilha, sozinha: duas abas, com a chave de acesso como texto.
+		const planilha = await baixar(exp.planilha.url);
+		expect([planilha.status, planilha.headers.get("content-disposition")]).toEqual([200, 'attachment; filename="resumo-2026-01-01-a-2026-12-31.xlsx"']);
+		const xlsx = await abrirZip(new Uint8Array(await planilha.arrayBuffer()));
+		expect(xlsx["xl/workbook.xml"]).toContain('name="Emitidas"');
+		expect(xlsx["xl/workbook.xml"]).toContain('name="Recebidas"');
+		expect(xlsx["xl/worksheets/sheet1.xml"]).toContain(`<t xml:space="preserve">${a.chaveAcesso}</t>`);
+		expect(xlsx["xl/worksheets/sheet1.xml"]).toContain('<t xml:space="preserve">Outra Empresa de Teste</t>');
+		expect(xlsx["xl/worksheets/sheet1.xml"]).toContain('s="2"><v>700</v>');
+		expect(xlsx["xl/worksheets/sheet2.xml"]).toContain(`<t xml:space="preserve">${rb}</t>`);
+		expect(xlsx["xl/worksheets/sheet2.xml"]).toContain('<t xml:space="preserve">Ciência da operação</t>');
+
+		// Link adulterado, de outro arquivo ou vencido não baixa nada.
+		const url = new URL(exp.partes[0].url);
+		const assinatura = url.searchParams.get("assinatura") ?? "";
+		const com = (mudar: (u: URL) => void) => {
+			const u = new URL(url);
+			mudar(u);
+			return baixar(u.toString());
+		};
+		expect((await com((u) => u.searchParams.set("assinatura", assinatura.replace(/.$/, assinatura.endsWith("0") ? "1" : "0")))).status).toBe(403);
+		expect((await com((u) => u.searchParams.set("expira", String(Number(u.searchParams.get("expira")) + 60_000)))).status).toBe(403);
+		expect((await com((u) => { u.pathname = u.pathname.replace("parte-1", "planilha"); })).status).toBe(403);
+		expect((await com((u) => { u.pathname = u.pathname.replace("parte-1", "parte-2"); })).status).toBe(403);
+		expect((await baixar(`${COFRE}/exportacoes/${exp.id}/parte-1`)).status).toBe(403);
+		await env.DB.prepare("UPDATE exportacoes SET expires_at = ? WHERE id = ?").bind(Date.now() - 1, exp.id).run();
+		expect(await (await baixar(exp.partes[0].url)).json()).toMatchObject({ erro: { codigo: "link_invalido" } });
+		expect((await cliente("GET", `/v1/exportacoes/${exp.id}`)).status).toBe(404);
+	});
+
+	it("exporta só o que foi pedido, consulta de novo e respeita o escopo da chave", async () => {
+		const { a, b } = await cenario();
+		const exp = (await cliente("POST", "/v1/exportacoes", { ambiente: "homologacao", de: HOJE, ate: HOJE, incluir: ["nfe"] })).json;
+		expect(exp).toMatchObject({ situacao: "pronta", arquivos: 2, conteudo: { nfe: 2 }, incluir: ["nfe"] });
+		const arquivos = await abrirZip(new Uint8Array(await (await app.request(exp.partes[0].url, {}, env)).arrayBuffer()));
+		expect(Object.keys(arquivos).sort()).toEqual([`emitidas/nfe/${a.chaveAcesso}-nfe.xml`, `emitidas/nfe/${b.chaveAcesso}-nfe.xml`, `resumo-${HOJE}-a-${HOJE}.xlsx`].sort());
+
+		// Consultar devolve a mesma exportação com links novos; a lista mostra as válidas.
+		const denovo = (await cliente("GET", `/v1/exportacoes/${exp.id}`)).json;
+		expect(denovo).toMatchObject({ id: exp.id, situacao: "pronta", arquivos: 2 });
+		expect((await app.request(denovo.planilha.url, {}, env)).status).toBe(200);
+		expect((await cliente("GET", "/v1/exportacoes")).json.exportacoes.map((e: Json) => e.id)).toEqual([exp.id]);
+
+		// Período sem nada: pronta, sem partes, só a planilha.
+		const vazia = (await cliente("POST", "/v1/exportacoes", { ambiente: "homologacao", de: "2020-01-01", ate: "2020-01-31" })).json;
+		expect(vazia).toMatchObject({ situacao: "pronta", arquivos: 0, partes: [] });
+		expect((await app.request(vazia.planilha.url, {}, env)).status).toBe(200);
+
+		// Pedido inválido e chave só de homologação.
+		for (const pedido of [{ ambiente: "homologacao", de: HOJE }, { ambiente: "homologacao", de: HOJE, ate: HOJE, incluir: ["cte"] }, { ambiente: "homologacao", de: HOJE, ate: HOJE, incluir: [] }]) {
+			expect((await cliente("POST", "/v1/exportacoes", pedido)).json.erro.codigo).toBe("requisicao_invalida");
+		}
+		const deTeste = (await admin("POST", "/admin/chaves", { nome: "Testes", escopo: "homologacao" })).json.chave.valor;
+		expect((await cliente("POST", "/v1/exportacoes", { ambiente: "producao", de: HOJE, ate: HOJE }, deTeste)).json.erro.codigo).toBe("chave_somente_homologacao");
+		expect((await cliente("GET", "/v1/exportacoes/exp_nao_existe")).status).toBe(404);
+
+		// O painel cria e consulta pela rota dele.
+		const doPainel = (await admin("POST", "/admin/painel/exportacoes", { ambiente: "homologacao", de: HOJE, ate: HOJE, incluir: ["recebidas"] })).json;
+		expect(doPainel).toMatchObject({ situacao: "pronta", incluir: ["recebidas"] });
+		expect((await admin("GET", `/admin/painel/exportacoes/${doPainel.id}`)).json.id).toBe(doPainel.id);
+		expect((await admin("POST", "/admin/painel/exportacoes", { ambiente: "homologacao" })).status).toBe(400);
+	});
+
+	it("enquanto houver XML por ler, a exportação fica preparando e avança a cada consulta", async () => {
+		const { a } = await cenario();
+		const { completarFiscal } = await import("../src/relatorios");
+		const periodo = { de: "2026-01-01", ate: "2026-12-31", environment: "homologacao" as const };
+		// Três notas com XML (duas emitidas e uma recebida): uma por chamada.
+		expect(await completarFiscal(env, periodo, 1)).toBe(2);
+		expect(await completarFiscal(env, periodo, 1)).toBe(1);
+		expect(await completarFiscal(env, periodo, 1)).toBe(0);
+		// XML que sumiu do cofre: a nota fica marcada e não trava a exportação.
+		await env.DB.prepare("UPDATE emissions SET fiscal = NULL, document_key = 'nfe/sumiu.xml' WHERE id = ?").bind(a.id).run();
+		expect(await completarFiscal(env, periodo, 10)).toBe(0);
+		expect((await env.DB.prepare("SELECT fiscal FROM emissions WHERE id = ?").bind(a.id).first<{ fiscal: string }>())?.fiscal).toBe("{}");
+	});
+});
+
 describe("painel: visão geral, listagens e detalhe", () => {
 	it("lista as notas emitidas com filtros, mostra o detalhe e soma o período", async () => {
 		await admin("PUT", "/admin/series", { modelo: "nfe", ambiente: "homologacao", serie: 1 });

@@ -13,6 +13,7 @@ import { registrarApiNfe } from "./api-nfe";
 import { cancelarPeloPainel, registrarApiNfse } from "./api-nfse";
 import { registrarApiPainel } from "./api-painel";
 import { registrarApiRecebidas } from "./api-recebidas";
+import { registrarApiRelatorios } from "./api-relatorios";
 import { registrarAtualizacao } from "./atualizacao";
 import { isAdminSecret, secretIsStrong } from "./crypto";
 import { PfxError, parsePfx } from "./pfx";
@@ -225,6 +226,7 @@ export function createApp(makeTransport: (env: AppEnv) => Transport, deps: AppDe
 	registrarApiDanfe(app);
 	registrarApiRecebidas(app, makeTransport);
 	registrarApiPainel(app);
+	registrarApiRelatorios(app);
 
 	return app;
 }
