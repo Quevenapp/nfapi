@@ -395,7 +395,12 @@ const Distribuicao = {
 		proximaConsulta: { type: ["string", "null"], format: "date-time", description: "Antes deste instante o cofre não consulta: depois de \"nenhum documento\" o Ambiente Nacional exige uma hora de espera. Nulo quando já pode consultar." },
 		bloqueada: { type: "boolean", description: "O Ambiente Nacional bloqueou as consultas do CNPJ (consumo indevido) até `proximaConsulta`." },
 		mensagem: { type: ["object", "null"], properties: { codigo: texto, descricao: texto }, description: "Última resposta: 138 documentos localizados, 137 nenhum documento, 656 consumo indevido." },
-		consultasPorChave: { type: "object", properties: { naUltimaHora: inteiro, limite: inteiro } },
+		consultasPorChave: { type: "object", properties: { naUltimaHora: inteiro, limite: inteiro }, description: "Consultas pontuais (por chave e por NSU) na última hora e o limite do cofre." },
+		documentosARecuperar: {
+			type: "integer",
+			description:
+				"Documentos que ficaram para trás e que o cofre ainda vai buscar um a um, sozinho, a cerca de 12 por hora. Acontece quando outro sistema (o do contador, por exemplo) consulta o mesmo CNPJ: o Ambiente Nacional recusa a consulta do cofre (656) e devolve o NSU em que o outro parou. Zero no uso normal.",
+		},
 	},
 };
 const Sincronizacao = {
@@ -403,7 +408,8 @@ const Sincronizacao = {
 	properties: {
 		consultou: { type: "boolean", description: "false: a espera ainda não venceu (ou outra consulta está em andamento) e nada foi enviado ao Ambiente Nacional." },
 		lotes: inteiro,
-		documentos: inteiro,
+		documentos: { type: "integer", description: "Documentos novos no cofre nesta consulta, contando os recuperados." },
+		recuperados: { type: "integer", description: "Dos documentos, quantos tinham ficado para trás e foram buscados pelo NSU (ver `documentosARecuperar`)." },
 		notasNovas: inteiro,
 		distribuicao: ref("Distribuicao"),
 	},

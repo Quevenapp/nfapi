@@ -24,8 +24,42 @@ export interface Cursor {
 	lastAt: number | null;
 	lastCode: string | null;
 	lastMessage: string | null;
-	/** Instantes das consultas pontuais (por chave) ainda dentro da última hora. */
+	/** Instantes das consultas pontuais (por chave ou por NSU) ainda dentro da última hora. */
 	pontuais: number[];
+	/** NSU que o cofre pulou e ainda vai buscar um a um: intervalos [de, até], inclusivos, em ordem. */
+	lacunas: Lacuna[];
+}
+
+export type Lacuna = [de: number, ate: number];
+
+/** Quantos NSU ainda faltam buscar. */
+export const contarPulados = (lacunas: Lacuna[]) => lacunas.reduce((n, [de, ate]) => n + (ate - de + 1), 0);
+
+/** O menor NSU pulado, ou null quando não há nenhum. */
+export const proximoPulado = (lacunas: Lacuna[]): number | null => lacunas[0]?.[0] ?? null;
+
+/** Tira da lista o menor NSU pulado. */
+export function semOProximo(lacunas: Lacuna[]): Lacuna[] {
+	const [primeira, ...resto] = lacunas;
+	if (!primeira) return [];
+	return primeira[0] < primeira[1] ? [[primeira[0] + 1, primeira[1]], ...resto] : resto;
+}
+
+/**
+ * Acrescenta um intervalo pulado. A lista guarda no máximo `limite` NSU, os
+ * mais recentes; devolve também quantos ficaram de fora.
+ */
+export function comLacuna(lacunas: Lacuna[], de: number, ate: number, limite: number): { lacunas: Lacuna[]; descartados: number } {
+	let lista: Lacuna[] = ate >= de ? [...lacunas, [de, ate]] : [...lacunas];
+	let excesso = contarPulados(lista) - limite;
+	const descartados = Math.max(excesso, 0);
+	while (excesso > 0 && lista[0]) {
+		const [inicio, fim] = lista[0];
+		const tamanho = fim - inicio + 1;
+		lista = tamanho <= excesso ? lista.slice(1) : [[inicio + excesso, fim], ...lista.slice(1)];
+		excesso -= Math.min(tamanho, excesso);
+	}
+	return { lacunas: lista, descartados };
 }
 
 const toCursor = (r: Row): Cursor => ({
@@ -41,6 +75,7 @@ const toCursor = (r: Row): Cursor => ({
 	lastCode: (r.last_code as string | null) ?? null,
 	lastMessage: (r.last_message as string | null) ?? null,
 	pontuais: JSON.parse((r.pontuais as string | null) ?? "[]") as number[],
+	lacunas: JSON.parse((r.lacunas as string | null) ?? "[]") as Lacuna[],
 });
 
 export async function getCursor(db: D1Database, docId: string, environment: Ambiente): Promise<Cursor | null> {
@@ -85,15 +120,15 @@ export async function reservarConsulta(db: D1Database, c: Cursor, agora: number,
 export async function atualizarCursor(
 	db: D1Database,
 	c: Cursor,
-	patch: Partial<Pick<Cursor, "ultNsu" | "maxNsu" | "nextAt" | "lastAt" | "lastCode" | "lastMessage" | "pontuais">>,
+	patch: Partial<Pick<Cursor, "ultNsu" | "maxNsu" | "nextAt" | "lastAt" | "lastCode" | "lastMessage" | "pontuais" | "lacunas">>,
 ): Promise<Cursor> {
 	const n = { ...c, ...patch };
 	await db
 		.prepare(
-			`UPDATE dfe_cursores SET ult_nsu = ?, max_nsu = ?, next_at = ?, last_at = ?, last_code = ?, last_message = ?, pontuais = ?
+			`UPDATE dfe_cursores SET ult_nsu = ?, max_nsu = ?, next_at = ?, last_at = ?, last_code = ?, last_message = ?, pontuais = ?, lacunas = ?
 			 WHERE doc_id = ? AND environment = ?`,
 		)
-		.bind(n.ultNsu, n.maxNsu, n.nextAt, n.lastAt, n.lastCode, n.lastMessage, JSON.stringify(n.pontuais), c.docId, c.environment)
+		.bind(n.ultNsu, n.maxNsu, n.nextAt, n.lastAt, n.lastCode, n.lastMessage, JSON.stringify(n.pontuais), JSON.stringify(n.lacunas), c.docId, c.environment)
 		.run();
 	return n;
 }
@@ -164,6 +199,22 @@ export async function listDocumentos(
 		.bind(filtro.depois ?? 0, filtro.environment ?? null, filtro.accessKey ?? null, filtro.eventos ? 1 : 0, Math.min(Math.max(filtro.limite ?? 50, 1), 200))
 		.all<Row>();
 	return results.map(toDocumento);
+}
+
+/** O documento deste NSU já está no cofre? */
+export async function temNsu(db: D1Database, c: Pick<Cursor, "docId" | "environment">, nsu: number): Promise<boolean> {
+	return (await db.prepare("SELECT 1 AS ok FROM dfe_documentos WHERE doc_id = ? AND environment = ? AND nsu = ?").bind(c.docId, c.environment, nsu).first()) !== null;
+}
+
+/** O cofre já recebeu algum destes eventos para a nota? (O evento pode chegar antes da nota.) */
+export async function temEvento(db: D1Database, environment: Ambiente, accessKey: string, tipos: Iterable<string>): Promise<boolean> {
+	const lista = [...tipos];
+	if (lista.length === 0) return false;
+	const row = await db
+		.prepare(`SELECT 1 AS ok FROM dfe_documentos WHERE environment = ? AND access_key = ? AND event_type IN (${lista.map(() => "?").join(", ")}) LIMIT 1`)
+		.bind(environment, accessKey, ...lista)
+		.first();
+	return row !== null;
 }
 
 export async function getDocumento(db: D1Database, seq: number): Promise<DocumentoDfe | null> {

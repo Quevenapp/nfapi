@@ -10,7 +10,12 @@
 //   - depois de "nenhum documento" (137), ou quando o último NSU alcança o
 //     maior NSU existente, a próxima consulta só sai uma hora depois;
 //   - depois de "consumo indevido" (656), nada sai por uma hora;
-//   - a consulta por chave tem limite de 20 por hora; o cofre para antes.
+//   - a consulta por chave ou por NSU tem limite de 20 por hora; o cofre para antes.
+//
+// Quando outro sistema (o do contador, por exemplo) consulta o mesmo CNPJ, o
+// 656 pode devolver um NSU à frente do que o cofre conhece. O cofre segue desse
+// número, como a nota técnica manda, e busca um a um os NSU que ficaram para
+// trás (consNSU), para nenhum documento se perder.
 
 import { ambienteNacional } from "../fiscal/dados";
 import type { Ambiente } from "../fiscal/dados";
@@ -29,8 +34,12 @@ export const ESPERA_MS = 62 * 60_000;
 export const NOVA_TENTATIVA_MS = 15 * 60_000;
 /** Enquanto uma consulta está em andamento, nenhuma outra começa. */
 const RESERVA_MS = 10 * 60_000;
-/** Consultas por chave em uma hora. O Ambiente Nacional aceita 20; o cofre para antes. */
+/** Consultas por chave ou por NSU em uma hora. O Ambiente Nacional aceita 20; o cofre para antes. */
 export const LIMITE_POR_CHAVE = 18;
+/** Dessas, quantas a busca dos NSU pulados pode usar; o resto fica para as consultas por chave. */
+export const LIMITE_DE_RECUPERACAO = 12;
+/** Quantos NSU pulados o cofre guarda para buscar: os mais recentes. */
+export const LIMITE_DE_PULADOS = 500;
 /** A ciência da operação só é aceita até 10 dias depois da autorização; o cofre para um dia antes. */
 const DIAS_PARA_CIENCIA = 9;
 
@@ -63,8 +72,12 @@ interface Guardado {
 	novaNota: boolean;
 }
 
-/** Arquiva o documento, registra-o e atualiza a nota recebida a que ele se refere. */
-async function guardar(d1: D1Database, ops: Operacoes, cursor: banco.Cursor, doc: DocumentoDistribuido, agora: number): Promise<Guardado> {
+/**
+ * Arquiva o documento, registra-o e atualiza a nota recebida a que ele se refere.
+ * `foraDeOrdem`: o documento não veio pela sequência (busca por NSU ou por chave),
+ * então um evento da nota pode ter chegado antes dela.
+ */
+async function guardar(d1: D1Database, ops: Operacoes, cursor: banco.Cursor, doc: DocumentoDistribuido, agora: number, foraDeOrdem = false): Promise<Guardado> {
 	const lido = lerDocumento(doc.xml);
 	const { environment, docId } = cursor;
 	let destino: string;
@@ -101,6 +114,7 @@ async function guardar(d1: D1Database, ops: Operacoes, cursor: banco.Cursor, doc
 	const k = { docId, environment, accessKey: chave };
 	if (lido.tipo === "resumo_nfe" || lido.tipo === "nfe") {
 		const completa = lido.tipo === "nfe";
+		const jaCancelada = foraDeOrdem && (await banco.temEvento(d1, environment, chave, EVENTOS_DE_CANCELAMENTO));
 		const r = await banco.salvarRecebida(
 			d1,
 			k,
@@ -108,7 +122,7 @@ async function guardar(d1: D1Database, ops: Operacoes, cursor: banco.Cursor, doc
 				// O resumo só é entregue ao destinatário; a nota completa também vai a transportador e terceiros.
 				role: completa && lido.destinatario && lido.destinatario.slice(0, 8) !== docId.slice(0, 8) ? "terceiro" : undefined,
 				emitDoc: lido.emitente.documento, emitName: lido.emitente.nome, emitIe: lido.emitente.ie,
-				issuedAt: lido.emitidaEm, operation: lido.operacao, value: lido.valor, situation: lido.situacao,
+				issuedAt: lido.emitidaEm, operation: lido.operacao, value: lido.valor, situation: jaCancelada ? "cancelada" : lido.situacao,
 				protocol: lido.protocolo, authorizedAt: lido.autorizadaEm,
 				...(completa ? { xmlKey: destino } : { summaryKey: destino }),
 			},
@@ -133,34 +147,112 @@ export interface ResultadoSincronizacao {
 	/** Falso quando a espera ainda não venceu ou outra consulta está em andamento: nada foi enviado. */
 	consultou: boolean;
 	lotes: number;
+	/** Documentos novos no cofre, contando os recuperados. */
 	documentos: number;
+	/** Dos documentos, quantos eram NSU pulados, buscados um a um. */
+	recuperados: number;
 	notasNovas: number;
 	cursor: banco.Cursor;
 }
 
+type Contagem = Omit<ResultadoSincronizacao, "cursor">;
+type Mudanca = Parameters<typeof banco.atualizarCursor>[2];
+
+/** Há NSU pulado para buscar e cota de consultas pontuais nesta hora? */
+export const podeRecuperar = (c: banco.Cursor, agora: number) =>
+	c.lacunas.length > 0 && c.pontuais.filter((t) => t > agora - HORA).length < LIMITE_DE_RECUPERACAO;
+
+/**
+ * Busca pelo NSU, em ordem, os documentos que o cofre pulou, até acabar a cota
+ * de consultas pontuais da hora. `parar` vem preenchido quando o Ambiente
+ * Nacional bloqueou ou não respondeu: a consulta toda para ali.
+ */
+async function recuperarPulados(d1: D1Database, ops: Operacoes, inicial: banco.Cursor, agora: number, resumo: Contagem): Promise<{ cursor: banco.Cursor; parar: Mudanca | null }> {
+	const url = ambienteNacional(inicial.environment).distribuicao;
+	let cursor = inicial;
+	const resolvido = async () => {
+		cursor = await banco.atualizarCursor(d1, cursor, { lacunas: banco.semOProximo(cursor.lacunas) });
+	};
+	// O limite de passos protege a execução quando muitos NSU já estão no cofre.
+	for (let passo = 0; passo < 40; passo++) {
+		const nsu = banco.proximoPulado(cursor.lacunas);
+		if (nsu === null) break;
+		if (await banco.temNsu(d1, cursor, nsu)) {
+			await resolvido();
+			continue;
+		}
+		const pontuais = cursor.pontuais.filter((t) => t > agora - HORA);
+		if (pontuais.length >= LIMITE_DE_RECUPERACAO) break;
+		cursor = await banco.atualizarCursor(d1, cursor, { pontuais: [...pontuais, agora] });
+		resumo.consultou = true;
+
+		const pedido = distDFeInt({ ambiente: cursor.environment, uf: cursor.uf, cnpj: cursor.docId, consulta: { tipo: "nsu", nsu } });
+		let r: Awaited<ReturnType<typeof lerRetornoDistribuicao>>;
+		try {
+			const res = await ops.transmit(requisicaoDistribuicao(url, pedido, `dfe:${cursor.docId}:nsu:${nsu}`));
+			r = await lerRetornoDistribuicao(res.status, base64ParaTexto(res.bodyB64));
+		} catch (err) {
+			if (!(err instanceof OperacaoError)) throw err;
+			return { cursor, parar: { nextAt: agora + NOVA_TENTATIVA_MS, lastCode: err.code, lastMessage: err.message } };
+		}
+		if (r.tipo === "indefinida") return { cursor, parar: { nextAt: agora + NOVA_TENTATIVA_MS, lastCode: "sem_resposta_conclusiva", lastMessage: r.detalhe } };
+		if (r.codigo === "656" || SERVICO_PARALISADO.has(r.codigo)) {
+			return { cursor, parar: { nextAt: agora + (r.codigo === "656" ? ESPERA_MS : NOVA_TENTATIVA_MS), lastCode: r.codigo, lastMessage: r.motivo } };
+		}
+		if (r.codigo === "138") {
+			for (const doc of r.documentos) {
+				const g = await guardar(d1, ops, cursor, { ...doc, nsu: doc.nsu ?? nsu }, agora, true);
+				if (!g.repetido) {
+					resumo.documentos++;
+					resumo.recuperados++;
+				}
+				if (g.novaNota) resumo.notasNovas++;
+			}
+		} else if (r.codigo !== "137") {
+			// 137: o NSU não tem mais documento (passou dos 90 dias). Qualquer outra recusa fica
+			// no histórico, e o NSU sai da lista para a busca não travar nele.
+			await store.audit(d1, { action: "distribuicao.nsu_nao_recuperado", actor: "cofre", outcome: "erro", detail: { cnpj: cursor.docId, ambiente: cursor.environment, nsu, codigo: r.codigo, motivo: r.motivo } });
+		}
+		await resolvido();
+	}
+	return { cursor, parar: null };
+}
+
 /**
  * Baixa o que chegou depois do último NSU, em lotes de até 50 documentos, até
- * alcançar o maior NSU ou o limite de lotes desta execução.
+ * alcançar o maior NSU ou o limite de lotes desta execução. Antes, busca os NSU
+ * que ficaram para trás; com `soRecuperar`, faz só essa parte.
  */
 export async function sincronizar(
 	d1: D1Database,
 	ops: Operacoes,
 	inicial: banco.Cursor,
-	opcoes: { maxLotes?: number; agora?: number } = {},
+	opcoes: { maxLotes?: number; agora?: number; soRecuperar?: boolean } = {},
 ): Promise<ResultadoSincronizacao | Falha> {
 	const agora = opcoes.agora ?? Date.now();
 	const bloqueio = await producaoBloqueada(d1, inicial.environment);
 	if (bloqueio) return bloqueio;
-	const parado = { consultou: false, lotes: 0, documentos: 0, notasNovas: 0, cursor: inicial };
+	const parado = { consultou: false, lotes: 0, documentos: 0, recuperados: 0, notasNovas: 0, cursor: inicial };
 	if (inicial.nextAt > agora || !(await banco.reservarConsulta(d1, inicial, agora, agora + RESERVA_MS))) return parado;
 
 	const url = ambienteNacional(inicial.environment).distribuicao;
 	let cursor: banco.Cursor = { ...inicial, nextAt: agora + RESERVA_MS };
-	const resumo = { consultou: true, lotes: 0, documentos: 0, notasNovas: 0 };
-	const fechar = async (patch: Parameters<typeof banco.atualizarCursor>[2]) => {
+	const resumo: Contagem = { consultou: !opcoes.soRecuperar, lotes: 0, documentos: 0, recuperados: 0, notasNovas: 0 };
+	const fechar = async (patch: Mudanca) => {
 		cursor = await banco.atualizarCursor(d1, cursor, { lastAt: agora, ...patch });
 		return { ...resumo, cursor };
 	};
+
+	if (cursor.lacunas.length > 0) {
+		const recuperacao = await recuperarPulados(d1, ops, cursor, agora, resumo);
+		cursor = recuperacao.cursor;
+		if (recuperacao.parar) return fechar(recuperacao.parar);
+	}
+	if (opcoes.soRecuperar) {
+		// Devolve a vez: a consulta por sequência continua podendo sair quando for pedida.
+		cursor = await banco.atualizarCursor(d1, cursor, { nextAt: inicial.nextAt });
+		return { ...resumo, cursor };
+	}
 
 	for (let lote = 0; lote < (opcoes.maxLotes ?? 5); lote++) {
 		const pedido = distDFeInt({ ambiente: cursor.environment, uf: cursor.uf, cnpj: cursor.docId, consulta: { tipo: "sequencia", ultNsu: cursor.ultNsu } });
@@ -202,12 +294,19 @@ export async function sincronizar(
 		if (r.codigo === "656") {
 			// Consumo indevido: bloqueio de uma hora. O retorno traz o último NSU que o Ambiente
 			// Nacional entregou a este CNPJ; se for maior que o do cofre, outro sistema consultou
-			// na frente e a sequência segue de onde ele parou (os NSU pulados ficam registrados).
+			// na frente. A sequência segue de onde ele parou, e os NSU que ficaram para trás
+			// entram na lista do que o cofre busca um a um.
 			const adiantado = r.ultNsu !== null && r.ultNsu > cursor.ultNsu ? r.ultNsu : null;
+			let lacunas = cursor.lacunas;
 			if (adiantado) {
-				await store.audit(d1, { action: "distribuicao.sequencia_adiantada", actor: "cofre", outcome: "ok", detail: { cnpj: cursor.docId, ambiente: cursor.environment, de: cursor.ultNsu, para: adiantado } });
+				const nova = banco.comLacuna(cursor.lacunas, cursor.ultNsu + 1, adiantado, LIMITE_DE_PULADOS);
+				lacunas = nova.lacunas;
+				await store.audit(d1, {
+					action: "distribuicao.sequencia_adiantada", actor: "cofre", outcome: "ok",
+					detail: { cnpj: cursor.docId, ambiente: cursor.environment, de: cursor.ultNsu, para: adiantado, aRecuperar: banco.contarPulados(lacunas), descartados: nova.descartados },
+				});
 			}
-			return fechar({ ultNsu: adiantado ?? cursor.ultNsu, maxNsu: Math.max(cursor.maxNsu, r.maxNsu ?? 0, adiantado ?? 0), nextAt: agora + ESPERA_MS, lastCode: r.codigo, lastMessage: r.motivo });
+			return fechar({ ultNsu: adiantado ?? cursor.ultNsu, maxNsu: Math.max(cursor.maxNsu, r.maxNsu ?? 0, adiantado ?? 0), lacunas, nextAt: agora + ESPERA_MS, lastCode: r.codigo, lastMessage: r.motivo });
 		}
 		return fechar({ nextAt: agora + (SERVICO_PARALISADO.has(r.codigo) ? NOVA_TENTATIVA_MS : ESPERA_MS), lastCode: r.codigo, lastMessage: r.motivo });
 	}
@@ -255,7 +354,7 @@ export async function consultarChave(d1: D1Database, ops: Operacoes, cursor: ban
 	if (r.codigo === "137") return falha(422, "nota_nao_localizada", "O Ambiente Nacional não tem esta nota disponível para este CNPJ.", [mensagem]);
 	if (r.codigo !== "138") return falha(422, "consulta_rejeitada", r.motivo, [mensagem]);
 
-	for (const doc of r.documentos) await guardar(d1, ops, atual, doc, agora);
+	for (const doc of r.documentos) await guardar(d1, ops, atual, doc, agora, true);
 	const recebida = await banco.findRecebida(d1, cursor.environment, chave);
 	return recebida ? { ok: true, recebida } : falha(422, "nota_nao_localizada", "O retorno não trouxe a nota desta chave.", [mensagem]);
 }

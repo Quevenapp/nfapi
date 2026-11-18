@@ -23,7 +23,7 @@ import { ambienteDoFiltro, autenticar, erro, iso, operacoes, problema } from "./
 import type { AppEnv, Ctx } from "./app";
 import * as banco from "./recebidas/banco";
 import { ConfiguracaoInput, ConsultarChaveInput, ManifestacaoInput, ManifestacaoPorChaveInput, SincronizarInput } from "./recebidas/schema";
-import { type Falha, LIMITE_POR_CHAVE, cnpjDoTitular, consultarChave, manifestar, sincronizar } from "./recebidas/servico";
+import { type Falha, LIMITE_POR_CHAVE, type ResultadoSincronizacao, cnpjDoTitular, consultarChave, manifestar, sincronizar } from "./recebidas/servico";
 import * as store from "./store";
 import type { Transport } from "./transport";
 
@@ -102,6 +102,17 @@ export const distribuicaoJson = (c: banco.Cursor, agora = Date.now()) => ({
 	/** Código e motivo da última resposta (cStat e xMotivo), ou o erro do cofre. */
 	mensagem: c.lastCode ? { codigo: c.lastCode, descricao: c.lastMessage ?? "" } : null,
 	consultasPorChave: { naUltimaHora: c.pontuais.filter((t) => t > agora - 3_600_000).length, limite: LIMITE_POR_CHAVE },
+	/** NSU que o cofre pulou (outro sistema consultou na frente) e ainda vai buscar um a um. */
+	documentosARecuperar: banco.contarPulados(c.lacunas),
+});
+
+const sincronizacaoJson = (r: ResultadoSincronizacao) => ({
+	consultou: r.consultou,
+	lotes: r.lotes,
+	documentos: r.documentos,
+	recuperados: r.recuperados,
+	notasNovas: r.notasNovas,
+	distribuicao: distribuicaoJson(r.cursor),
 });
 
 export function registrarApiRecebidas(app: Hono<Ctx>, makeTransport: (env: AppEnv) => Transport) {
@@ -227,7 +238,7 @@ export function registrarApiRecebidas(app: Hono<Ctx>, makeTransport: (env: AppEn
 		if (cursor instanceof Response) return cursor;
 		const r = await sincronizar(c.env.DB, ops, cursor);
 		if ("ok" in r) return falhou(c, r);
-		return c.json({ consultou: r.consultou, lotes: r.lotes, documentos: r.documentos, notasNovas: r.notasNovas, distribuicao: distribuicaoJson(r.cursor) });
+		return c.json(sincronizacaoJson(r));
 	});
 
 	app.post("/v1/distribuicao/consultar-chave", async (c) => {
@@ -297,7 +308,7 @@ export function registrarApiRecebidas(app: Hono<Ctx>, makeTransport: (env: AppEn
 		if (!cursor) return recusar(c, 409, "distribuicao_nao_configurada", "Salve a configuração das notas recebidas antes de consultar.");
 		const r = await sincronizar(c.env.DB, ops, cursor);
 		if ("ok" in r) return recusar(c, r.status, r.codigo, r.mensagem);
-		return c.json({ consultou: r.consultou, lotes: r.lotes, documentos: r.documentos, notasNovas: r.notasNovas, distribuicao: distribuicaoJson(r.cursor) });
+		return c.json(sincronizacaoJson(r));
 	});
 
 	app.get("/admin/recebidas", async (c) => {

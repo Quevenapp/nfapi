@@ -3,7 +3,10 @@
 //   - quando há NFC-e em contingência, confere se a SEFAZ voltou e transmite a fila;
 //   - quando a consulta automática das notas recebidas está ligada e a espera
 //     exigida pelo Ambiente Nacional já venceu, baixa o que chegou e, se o
-//     emitente pediu, registra a ciência da operação das notas novas.
+//     emitente pediu, registra a ciência da operação das notas novas;
+//   - quando uma consulta deixou documentos para trás (outro sistema consultou o
+//     mesmo CNPJ na frente), busca-os um a um, mesmo com a consulta automática
+//     desligada.
 //
 // Sem pendência, não faz nada: nem abre o certificado, nem acorda o Container.
 
@@ -13,7 +16,7 @@ import * as banco from "./emissao/banco";
 import { type ResumoPendencias, processarPendencias } from "./emissao/nfe";
 import { OperacaoError, type Operacoes, abrirOperacoes } from "./operacoes";
 import * as recebidas from "./recebidas/banco";
-import { darCienciaAutomatica, haCienciaPendente, sincronizar } from "./recebidas/servico";
+import { darCienciaAutomatica, haCienciaPendente, podeRecuperar, sincronizar } from "./recebidas/servico";
 import * as store from "./store";
 import type { Transport } from "./transport";
 
@@ -35,13 +38,15 @@ async function processarRecebidas(env: AppEnv, ops: Operacoes, cursores: recebid
 	const resumo = { documentos: 0, notasNovas: 0, cienciasRegistradas: 0 };
 	for (const cursor of cursores) {
 		if (cursor.nextAt <= agora) {
-			const r = await sincronizar(env.DB, ops, cursor, { agora });
+			// Com a consulta automática desligada, o agendador só termina de buscar o que uma
+			// consulta pedida deixou para trás (NSU pulados); não consulta a sequência.
+			const r = await sincronizar(env.DB, ops, cursor, { agora, soRecuperar: !cursor.auto });
 			if (!("ok" in r) && r.consultou) {
 				resumo.documentos += r.documentos;
 				resumo.notasNovas += r.notasNovas;
 			}
 		}
-		if (cursor.autoCiencia) {
+		if (cursor.auto && cursor.autoCiencia) {
 			const c = await darCienciaAutomatica(env.DB, ops, cursor, 10, agora);
 			if (!("ok" in c)) resumo.cienciasRegistradas += c.registradas;
 		}
@@ -61,7 +66,7 @@ export async function executarAgendado(env: AppEnv, transport: Transport, agora 
 	// registrar (há um limite por execução, então pode sobrar da anterior).
 	const automaticos: recebidas.Cursor[] = [];
 	for (const c of cursores) {
-		if (c.auto && (c.nextAt <= agora || (c.autoCiencia && (await haCienciaPendente(env.DB, c, agora))))) automaticos.push(c);
+		if (c.auto ? c.nextAt <= agora || (c.autoCiencia && (await haCienciaPendente(env.DB, c, agora))) : c.nextAt <= agora && podeRecuperar(c, agora)) automaticos.push(c);
 	}
 	if (!haContingencia && automaticos.length === 0) return null;
 	try {

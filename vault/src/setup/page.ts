@@ -152,7 +152,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 		<section class="card">
 			<h2>Notas recebidas</h2>
 			<p>Notas fiscais que outras empresas emitiram contra o CNPJ deste certificado. O cofre as baixa do Ambiente Nacional da NF-e e as entrega aos seus sistemas pela API.</p>
-			<p class="muted small">Só este cofre deve consultar as notas recebidas deste CNPJ. Se outro sistema também consultar (um ERP antigo, o sistema do contador), o Ambiente Nacional bloqueia as consultas por uma hora a cada desencontro.</p>
+			<p class="muted small">Se outro sistema também consultar as notas recebidas deste CNPJ (o do contador, um ERP antigo), o Ambiente Nacional pode bloquear as consultas por uma hora a cada desencontro. O cofre não perde documentos por isso: busca um a um os que ficarem para trás. Se o outro sistema já registra a ciência das notas, deixe a ciência automática desligada.</p>
 			<ul id="dfe-status" class="results"></ul>
 			<form id="dfe-form">
 				<div class="grid">
@@ -605,6 +605,7 @@ export const SETUP_JS = String.raw`(function () {
 			var partes = [d.consultaAutomatica ? "consulta automática ligada" + (d.cienciaAutomatica ? ", com ciência automática" : "") : "consulta só quando pedida"];
 			if (d.ultimaConsulta) partes.push("última consulta em " + date(d.ultimaConsulta) + (d.mensagem ? " (" + d.mensagem.codigo + ": " + d.mensagem.descricao + ")" : ""));
 			if (d.proximaConsulta) partes.push((d.bloqueada ? "bloqueada pelo Ambiente Nacional até " : "próxima consulta a partir de ") + date(d.proximaConsulta));
+			if (d.documentosARecuperar > 0) partes.push(d.documentosARecuperar + " documento(s) a recuperar: outro sistema consultou este CNPJ na frente, e o cofre busca um a um o que ficou para trás");
 			estado.appendChild(el("li", {}, [
 				el("span", {}, [
 					el("strong", { text: (d.ambiente === "producao" ? "Produção" : "Homologação") + " · CNPJ " + d.cnpj + " · " + d.uf }),
@@ -902,6 +903,7 @@ export const SETUP_JS = String.raw`(function () {
 				: (r.documentos > 0
 					? r.documentos + " documento(s) recebido(s), " + r.notasNovas + " nota(s) nova(s)."
 					: "Nenhum documento novo" + (d.mensagem ? " (" + d.mensagem.codigo + ": " + d.mensagem.descricao + ")" : "") + ".");
+			if (d.documentosARecuperar > 0) texto += " Faltam " + d.documentosARecuperar + " documento(s) a recuperar; o cofre continua sozinho.";
 			message("dfe-message", texto, r.consultou && !d.bloqueada ? "ok" : "warn");
 			await renderRecebidas();
 			await renderAudit();

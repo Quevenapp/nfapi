@@ -45,7 +45,8 @@ const an = {
 	/** Notas que a consulta por chave devolve. */
 	porChave: {} as Record<string, string>,
 	fora: false,
-	distribuicao: null as null | ((corpo: string) => string),
+	/** Resposta forçada; null deixa o pedido seguir para a fila simulada. */
+	distribuicao: null as null | ((corpo: string) => string | null),
 	evento: null as null | ((corpo: string) => string),
 };
 const envelope = (xml: string) => `<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"><soap:Body>${xml}</soap:Body></soap:Envelope>`;
@@ -56,8 +57,15 @@ const consumoIndevido = (ultNsu?: number) =>
 	retDist(`<cStat>656</cStat><xMotivo>Rejeicao: Consumo Indevido. Deve ser utilizado o ultNSU nas solicitacoes subsequentes. Tente apos 1 hora</xMotivo>${ultNsu === undefined ? "" : `<ultNSU>${nsu15(ultNsu)}</ultNSU><maxNSU>${nsu15(ultNsu)}</maxNSU>`}`);
 
 async function distribuir(corpo: string): Promise<string> {
-	if (an.distribuicao) return an.distribuicao(corpo);
+	const forcada = an.distribuicao?.(corpo);
+	if (forcada) return forcada;
 	const maior = an.fila.reduce((m, d) => Math.max(m, d.nsu), 0);
+	const porNsu = /<consNSU><NSU>(\d{15})<\/NSU>/.exec(corpo)?.[1];
+	if (porNsu) {
+		const doc = an.fila.find((d) => d.nsu === Number(porNsu));
+		if (!doc) return retDist("<cStat>137</cStat><xMotivo>Nenhum documento localizado</xMotivo>");
+		return retDist(`<cStat>138</cStat><xMotivo>Documento localizado</xMotivo><loteDistDFeInt><docZip NSU="${nsu15(doc.nsu)}" schema="${doc.schema}">${await gzipBase64(doc.xml)}</docZip></loteDistDFeInt>`);
+	}
 	const porChave = /<consChNFe><chNFe>([0-9A-Z]{44})<\/chNFe>/.exec(corpo)?.[1];
 	if (porChave) {
 		const xml = an.porChave[porChave];
@@ -230,13 +238,98 @@ describe("distribuição de DF-e: notas recebidas", () => {
 		await configurar();
 		an.distribuicao = () => consumoIndevido(77);
 		const r = (await sincronizar()).json;
-		expect(r).toMatchObject({ consultou: true, documentos: 0, distribuicao: { bloqueada: true, ultimoNsu: 77, mensagem: { codigo: "656" } } });
+		expect(r).toMatchObject({ consultou: true, documentos: 0, distribuicao: { bloqueada: true, ultimoNsu: 77, documentosARecuperar: 77, mensagem: { codigo: "656" } } });
 		expect(Date.parse(r.distribuicao.proximaConsulta) - Date.now()).toBeGreaterThan(60 * 60_000);
 		// Bloqueado: nem a consulta por chave sai.
 		const porChave = await cliente("POST", "/v1/distribuicao/consultar-chave", { ambiente: "homologacao", chaveAcesso: chaveDoFornecedor(1) });
 		expect([porChave.status, porChave.json.erro.codigo]).toEqual([429, "consumo_indevido"]);
 		expect(chamadas("distribuicao")).toHaveLength(1);
 		expect((await admin("GET", "/admin/audit")).json.entries.some((e: Json) => e.action === "distribuicao.sequencia_adiantada" && e.detail.para === 77)).toBe(true);
+	});
+
+	it("outro sistema consultou na frente: segue do NSU devolvido e busca um a um o que ficou para trás", async () => {
+		const [a, b, c, d] = [201, 202, 203, 204].map(chaveDoFornecedor) as [string, string, string, string];
+		await configurar();
+		an.fila = [{ nsu: 10, schema: "resNFe_v1.01.xsd", xml: resumo(a) }];
+		expect((await sincronizar()).json.distribuicao).toMatchObject({ ultimoNsu: 10, documentosARecuperar: 0 });
+
+		// O contador baixou até o NSU 13; a consulta do cofre, que ainda estava no 10, é recusada.
+		// No intervalo, o cancelamento da nota B vem antes da própria nota.
+		an.fila.push(
+			{ nsu: 11, schema: "resNFe_v1.01.xsd", xml: resumo(b) },
+			{ nsu: 12, schema: "procEventoNFe_v1.00.xsd", xml: cancelamento(c) },
+			{ nsu: 13, schema: "resNFe_v1.01.xsd", xml: resumo(c) },
+			{ nsu: 14, schema: "resNFe_v1.01.xsd", xml: resumo(d) },
+		);
+		const porSequencia = (corpo: string) => corpo.includes("<distNSU>");
+		an.distribuicao = (corpo) => (porSequencia(corpo) ? consumoIndevido(13) : null);
+		await vencerEspera();
+		let r = (await sincronizar()).json;
+		expect(r).toMatchObject({ consultou: true, documentos: 0, recuperados: 0, distribuicao: { bloqueada: true, ultimoNsu: 13, documentosARecuperar: 3 } });
+		const registro = (await admin("GET", "/admin/audit")).json.entries.find((e: Json) => e.action === "distribuicao.sequencia_adiantada");
+		expect(registro.detail).toMatchObject({ de: 10, para: 13, aRecuperar: 3, descartados: 0 });
+
+		// Passado o bloqueio: primeiro os três que ficaram para trás, pelo NSU, depois a sequência.
+		an.distribuicao = null;
+		an.chamadas = [];
+		await vencerEspera();
+		r = (await sincronizar()).json;
+		expect(r).toMatchObject({ consultou: true, lotes: 1, documentos: 4, recuperados: 3, notasNovas: 3 });
+		expect(r.distribuicao).toMatchObject({ ultimoNsu: 14, documentosARecuperar: 0, bloqueada: false, consultasPorChave: { naUltimaHora: 3 } });
+		expect(chamadas("distribuicao").map((ch) => /<(consNSU><NSU|distNSU><ultNSU)>0*(\d+)</.exec(ch.corpo)?.slice(1).join(" "))).toEqual([
+			"consNSU><NSU 11", "consNSU><NSU 12", "consNSU><NSU 13", "distNSU><ultNSU 13",
+		]);
+		const lista = (await recebidas()).recebidas.map((n: Json) => [n.chaveAcesso, n.situacao]);
+		// A nota C ficou cancelada, embora o cancelamento tenha chegado antes dela.
+		expect(lista).toEqual([[a, "autorizada"], [b, "autorizada"], [c, "cancelada"], [d, "autorizada"]]);
+		expect((await cliente("GET", "/v1/distribuicao/documentos")).json.documentos.map((doc: Json) => doc.nsu)).toEqual([10, 11, 12, 13, 14]);
+	});
+
+	it("a busca do que ficou para trás respeita a cota por hora e para se o Ambiente Nacional bloquear ou sumir", async () => {
+		const [a, b, c] = [301, 302, 303].map(chaveDoFornecedor) as [string, string, string];
+		await configurar();
+		// O cofre nunca consultou; o outro sistema está no NSU 15. Só os NSU 3 e 5 ainda têm documento.
+		an.fila = [
+			{ nsu: 3, schema: "resNFe_v1.01.xsd", xml: resumo(a) },
+			{ nsu: 5, schema: "resNFe_v1.01.xsd", xml: resumo(b) },
+			{ nsu: 20, schema: "resNFe_v1.01.xsd", xml: resumo(c) },
+		];
+		const porSequencia = (corpo: string) => corpo.includes("<distNSU>");
+		an.distribuicao = (corpo) => (porSequencia(corpo) ? consumoIndevido(15) : null);
+		expect((await sincronizar()).json.distribuicao).toMatchObject({ ultimoNsu: 15, documentosARecuperar: 15, bloqueada: true });
+		const enviados = (tag: string) => chamadas("distribuicao").filter((ch) => ch.corpo.includes(tag)).length;
+
+		// Bloqueado, o agendador não toca em nada.
+		expect(await executarAgendado(env, transporte)).toBeNull();
+		expect(enviados("<consNSU>")).toBe(0);
+
+		// Bloqueio vencido e consulta automática desligada: o agendador só busca o que ficou para
+		// trás, 12 por hora, sem consultar a sequência.
+		await vencerEspera();
+		expect(await executarAgendado(env, transporte)).toEqual({ contingencia: null, recebidas: { documentos: 2, notasNovas: 2, cienciasRegistradas: 0 } });
+		expect([enviados("<consNSU>"), enviados("<distNSU>")]).toEqual([12, 1]);
+		expect(await cursor()).toMatchObject({ ultimoNsu: 15, documentosARecuperar: 3, proximaConsulta: null, consultasPorChave: { naUltimaHora: 12 } });
+		expect(await executarAgendado(env, transporte)).toBeNull();
+
+		// Na hora seguinte, o Ambiente Nacional não responde: o NSU fica na lista.
+		await env.DB.prepare("UPDATE dfe_cursores SET pontuais = '[]'").run();
+		an.fora = true;
+		expect(await executarAgendado(env, transporte)).toMatchObject({ recebidas: { documentos: 0 } });
+		expect(await cursor()).toMatchObject({ documentosARecuperar: 3, bloqueada: false, mensagem: { codigo: "tempo_esgotado" } });
+		an.fora = false;
+
+		// Depois, um bloqueio no meio da busca: para tudo por uma hora, e o NSU continua na lista.
+		await vencerEspera();
+		an.distribuicao = () => consumoIndevido();
+		const bloqueada = (await sincronizar()).json;
+		expect(bloqueada).toMatchObject({ documentos: 0, lotes: 0, distribuicao: { documentosARecuperar: 3, bloqueada: true, ultimoNsu: 15 } });
+
+		// Por fim os NSU 13 a 15 não têm mais documento (137) e saem da lista; a sequência segue do 15.
+		an.distribuicao = null;
+		await vencerEspera();
+		const fim = (await sincronizar()).json;
+		expect(fim).toMatchObject({ documentos: 1, recuperados: 0, notasNovas: 1, distribuicao: { ultimoNsu: 20, documentosARecuperar: 0 } });
+		expect((await recebidas()).recebidas.map((n: Json) => n.chaveAcesso)).toEqual([a, b, c]);
 	});
 
 	it("sem resposta ou serviço paralisado: tenta de novo em 15 minutos, sem mexer no NSU", async () => {

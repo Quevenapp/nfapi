@@ -7,6 +7,7 @@ import { montarChave } from "../src/nfe/chave";
 import { distDFeInt, lerDocumento, lerRetornoDistribuicao, requisicaoDistribuicao } from "../src/nfe/distribuicao";
 import { MANIFESTACOES, montarManifestacao } from "../src/nfe/eventos";
 import { base64ParaTexto, gzipBase64 } from "../src/nfse";
+import { comLacuna, contarPulados, proximoPulado, semOProximo } from "../src/recebidas/banco";
 import { isHostAllowed } from "../src/transport";
 
 const NS = 'xmlns="http://www.portalfiscal.inf.br/nfe"';
@@ -31,6 +32,27 @@ describe("pedido de distribuição (distDFeInt)", () => {
 		expect(distDFeInt({ ...base, ambiente: "producao", consulta: { tipo: "nsu", nsu: 7 } })).toContain("<tpAmb>1</tpAmb><cUFAutor>35</cUFAutor>");
 		expect(distDFeInt({ ...base, consulta: { tipo: "nsu", nsu: 7 } })).toContain("<consNSU><NSU>000000000000007</NSU></consNSU>");
 		expect(distDFeInt({ ...base, consulta: { tipo: "chave", chave: CHAVE } })).toContain(`<consChNFe><chNFe>${CHAVE}</chNFe></consChNFe>`);
+	});
+
+	it("guarda os NSU pulados em intervalos, entrega em ordem e fica só com os mais recentes", () => {
+		let { lacunas, descartados } = comLacuna([], 11, 13, 500);
+		expect([lacunas, descartados, contarPulados(lacunas), proximoPulado(lacunas)]).toEqual([[[11, 13]], 0, 3, 11]);
+		({ lacunas } = comLacuna(lacunas, 20, 20, 500));
+		const ordem: number[] = [];
+		for (let n = proximoPulado(lacunas); n !== null; n = proximoPulado(lacunas)) {
+			ordem.push(n);
+			lacunas = semOProximo(lacunas);
+		}
+		expect(ordem).toEqual([11, 12, 13, 20]);
+		expect(semOProximo([])).toEqual([]);
+
+		// Acima do limite, saem os mais antigos.
+		({ lacunas, descartados } = comLacuna([[1, 4]], 10, 15, 8));
+		expect([lacunas, descartados]).toEqual([[[3, 4], [10, 15]], 2]);
+		({ lacunas, descartados } = comLacuna([[1, 4]], 10, 5000, 500));
+		expect([lacunas, descartados, contarPulados(lacunas)]).toEqual([[[4501, 5000]], 4495, 500]);
+		// Intervalo vazio não entra.
+		expect(comLacuna([], 8, 7, 500).lacunas).toEqual([]);
 	});
 
 	it("vai em SOAP 1.2 para o Ambiente Nacional, que está na lista de endereços aceitos", () => {
