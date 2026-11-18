@@ -204,7 +204,9 @@ Para atualizar com um clique, crie o gatilho uma única vez:
 2. Em **Configurações > Compilações > Ganchos de implantação** (em inglês, Settings > Builds > Deploy Hooks), clique em **Adicionar**, dê um nome ao gancho, escolha a branch `main` e salve.
 3. Copie a URL que aparece abaixo do gancho e cole na seção **Atualização** do painel do cofre.
 
-O botão **Atualizar** dispara um build no Cloudflare. No começo do build, [`tools/atualizar.mjs`](tools/atualizar.mjs) baixa a versão publicada e a instala por cima; o nome do Worker, o banco, o bucket e tudo o que está guardado neles são preservados. Sem o gatilho, o mesmo resultado se obtém refazendo o deploy pelo painel do Cloudflare.
+O botão **Atualizar** dispara um build no Cloudflare e a tela passa a mostrar o andamento: pedido enviado, build em curso e versão nova no ar, o que costuma levar de um a três minutos. Quando termina, o painel avisa em qualquer tela e mostra o botão **Recarregar a página**; a página recarregada pede o segredo de novo, porque ele não fica guardado no navegador. O cofre não enxerga o build do Cloudflare: ele sabe que terminou quando quem responde já é a versão nova. Se nada mudar em dez minutos, a tela avisa que o build está demorando e manda conferir o registro dele no painel do Cloudflare.
+
+No começo do build, [`tools/atualizar.mjs`](tools/atualizar.mjs) baixa a versão publicada e a instala por cima; o nome do Worker, o banco, o bucket e tudo o que está guardado neles são preservados. Sem o gatilho, o mesmo resultado se obtém refazendo o deploy pelo painel do Cloudflare.
 
 A atualização instala código publicado em `Quevenapp/nfapi`, que é aberto e pode ser conferido antes. Ela só acontece quando você dispara. Quem mantém um fork próprio pode desligá-la com a variável de build `NFAPI_ATUALIZAR=0`, ou apontar para outro repositório com `NFAPI_REPO` e `NFAPI_CANAL`.
 

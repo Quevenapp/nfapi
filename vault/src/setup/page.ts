@@ -5,6 +5,8 @@
 // sem 'unsafe-inline'. O JS não usa innerHTML: todo texto vindo do servidor
 // entra por textContent. Por causa da CSP, não há atributo style no HTML.
 
+import { VAULT_VERSION } from "../protocol";
+
 export { SETUP_CSS } from "./estilo";
 export { SETUP_JS } from "./script";
 
@@ -61,7 +63,7 @@ export const SETUP_HTML = `<!doctype html>
 	</div>
 </main>
 
-<div id="panel" class="shell" hidden>
+<div id="panel" class="shell" data-versao="${VAULT_VERSION}" hidden>
 	<div id="backdrop" class="backdrop" hidden></div>
 
 	<nav id="sidebar" class="sidebar" aria-label="Seções do painel">
@@ -95,6 +97,12 @@ export const SETUP_HTML = `<!doctype html>
 		</header>
 
 		<main class="content">
+			<!-- Andamento da atualização e aviso de que a página ficou velha, em qualquer tela. -->
+			<div id="update-banner" class="banner" role="status" hidden>
+				<span id="update-banner-text"></span>
+				<a id="update-banner-link" href="#atualizacao">Acompanhar</a>
+				<button type="button" id="update-banner-reload" class="primary small-button" hidden>Recarregar a página</button>
+			</div>
 
 			<!-- ---------- Visão geral ---------- -->
 			<section class="view" data-view="visao-geral" hidden>
@@ -495,6 +503,13 @@ export const SETUP_HTML = `<!doctype html>
 						<button type="button" id="update-check" class="secondary">Verificar novamente</button>
 					</div>
 					<p id="update-message" role="status"></p>
+					<div id="update-progress" class="progress-box" hidden>
+						<h3 id="update-progress-title"></h3>
+						<div id="update-progress-bar" class="progress" aria-hidden="true"></div>
+						<ol id="update-steps" class="steps"></ol>
+						<p id="update-progress-note" class="small muted"></p>
+						<button type="button" id="update-reload" class="primary" hidden>Recarregar a página</button>
+					</div>
 					<details id="update-setup">
 						<summary>Configurar o gatilho de atualização</summary>
 						<p class="small">A atualização dispara um novo build deste cofre no Cloudflare. Crie o gatilho uma única vez:</p>

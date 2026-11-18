@@ -836,7 +836,7 @@ export const SETUP_JS = String.raw`(function () {
 		var faltam = cert ? Math.floor((new Date(cert.notAfter) - Date.now()) / 86400000) : null;
 		$("top-cert").textContent = !cert ? "Sem certificado" : (faltam < 0 ? "Certificado vencido" : (faltam < 30 ? "Certificado vence em " + plural(faltam, "dia", "dias") : "Certificado válido até " + dia(cert.notAfter)));
 		$("top-cert").setAttribute("data-tone", !cert || faltam < 0 ? "danger" : (faltam < 30 ? "warning" : "success"));
-		$("nav-update").hidden = !(atualizacao && (atualizacao.haAtualizacao || !atualizacao.gatilhoConfigurado));
+		$("nav-update").hidden = !(atualizacao && (atualizacao.haAtualizacao || !atualizacao.gatilhoConfigurado || paginaVelha()));
 	}
 
 	async function renderSeries() {
@@ -905,9 +905,103 @@ export const SETUP_JS = String.raw`(function () {
 
 	// ---------- Atualização ----------
 
-	async function renderUpdate(verificar) {
-		var u = await api("GET", "/admin/atualizacao" + (verificar ? "?verificar=1" : ""));
+	// O que esta página carregou. Quando o cofre passa a responder por outra
+	// versão (ou por outro build da mesma versão), a página aberta ficou velha.
+	var paginaVersao = $("panel").getAttribute("data-versao");
+	var paginaImplantacao = null;
+	var vigia = null;
+	var batidas = 0;
+	var consultando = false;
+
+	function paginaVelha() {
+		if (!atualizacao) return false;
+		return atualizacao.instalada !== paginaVersao ||
+			Boolean(paginaImplantacao && atualizacao.implantacao && atualizacao.implantacao !== paginaImplantacao);
+	}
+	function decorrido(desde) {
+		var s = Math.max(Math.floor((Date.now() - new Date(desde)) / 1000), 0);
+		return s < 60 ? s + " s" : Math.floor(s / 60) + " min " + dois(s % 60) + " s";
+	}
+	function passo(estado, titulo, detalhe) {
+		return el("li", { "data-state": estado }, [el("strong", { text: titulo }), detalhe ? el("small", { text: detalhe }) : null]);
+	}
+
+	// Faixa no alto de qualquer tela e o passo a passo na tela de atualização.
+	function pintarAndamento() {
+		var a = atualizacao && atualizacao.andamento;
+		var velha = paginaVelha();
+		var correndo = Boolean(a && a.situacao === "em_andamento") && !velha;
+		var demorando = Boolean(a && a.situacao === "demorando") && !velha;
+		var alvo = a && a.para ? "a versão " + a.para : "a versão nova";
+
+		var faixa = $("update-banner");
+		// Na tela de atualização o passo a passo já diz tudo.
+		faixa.hidden = telaAtual() === "atualizacao" || !(velha || correndo || demorando);
+		faixa.setAttribute("data-tone", velha ? "success" : (demorando ? "warning" : "info"));
+		if (velha) $("update-banner-text").textContent = "A versão " + atualizacao.instalada + " do cofre já está no ar. Recarregue a página para usar o painel novo.";
+		else if (demorando) $("update-banner-text").textContent = "A atualização do cofre está demorando mais que o normal (" + decorrido(a.iniciadaEm) + ").";
+		else if (correndo) $("update-banner-text").textContent = "Atualizando o cofre para " + alvo + "… " + decorrido(a.iniciadaEm) + ".";
+		$("update-banner-link").hidden = velha;
+		$("update-banner-reload").hidden = !velha;
+
+		var caixa = $("update-progress");
+		var concluida = velha || Boolean(a && a.situacao === "concluida");
+		caixa.hidden = !(a || velha);
+		if (caixa.hidden) return;
+		var passos = $("update-steps");
+		clear(passos);
+		$("update-progress-bar").setAttribute("data-state", concluida ? "done" : (demorando ? "late" : "running"));
+		$("update-reload").hidden = !velha;
+		if (a) passos.appendChild(passo("done", "Pedido enviado ao Cloudflare", "Às " + hora(a.iniciadaEm) + "."));
+		if (concluida) {
+			$("update-progress-title").textContent = "Atualização concluída";
+			if (a) passos.appendChild(passo("done", "O Cloudflare compilou e publicou a versão nova"));
+			passos.appendChild(passo("done", "Versão " + atualizacao.instalada + " no ar", a && a.concluidaEm ? "Desde as " + hora(a.concluidaEm) + "." : ""));
+			$("update-progress-note").textContent = velha
+				? "Esta página ainda é a da versão anterior. Recarregue para usar o painel novo; o cofre vai pedir o segredo de novo."
+				: "Esta página já é a da versão nova.";
+		} else if (demorando) {
+			$("update-progress-title").textContent = "A atualização está demorando";
+			passos.appendChild(passo("late", "O build ainda não terminou", "Começou há " + decorrido(a.iniciadaEm) + ". O normal é levar de 1 a 3 minutos."));
+			passos.appendChild(passo("pending", "Versão nova no ar"));
+			$("update-progress-note").textContent = "Veja o registro do build no painel do Cloudflare, na página deste Worker, em Implantações. Se o build falhou, o cofre continua funcionando na versão " + a.de + ". Esta tela avisa se a versão nova entrar no ar.";
+		} else {
+			$("update-progress-title").textContent = "Atualizando o cofre para " + alvo;
+			passos.appendChild(passo("active", "O Cloudflare está compilando e publicando", "Há " + decorrido(a.iniciadaEm) + ". Costuma levar de 1 a 3 minutos."));
+			passos.appendChild(passo("pending", "Versão nova no ar"));
+			$("update-progress-note").textContent = "O cofre continua funcionando enquanto isso. Pode usar as outras telas: o painel avisa quando terminar.";
+		}
+	}
+
+	// Acompanha a atualização pedida: o relógio anda a cada segundo e o cofre é
+	// consultado a cada 5 segundos (a cada 30 quando o build demora).
+	function vigiar() {
+		if (vigia) return;
+		batidas = 0;
+		vigia = setInterval(async function () {
+			var a = atualizacao && atualizacao.andamento;
+			var ativo = a && (a.situacao === "em_andamento" || a.situacao === "demorando") && !paginaVelha();
+			if (!secret || !ativo) {
+				clearInterval(vigia);
+				vigia = null;
+				return;
+			}
+			batidas++;
+			if (!consultando && batidas % (a.situacao === "demorando" ? 30 : 5) === 0) {
+				consultando = true;
+				try {
+					pintarUpdate(await api("GET", "/admin/atualizacao"));
+				} catch (err) {
+					// Na troca de versão o cofre pode falhar por um instante: tenta de novo na próxima volta.
+				}
+				consultando = false;
+			} else pintarAndamento();
+		}, 1000);
+	}
+
+	function pintarUpdate(u) {
 		atualizacao = u;
+		var emCurso = Boolean(u.andamento && u.andamento.situacao === "em_andamento") && !paginaVelha();
 		var texto = "Versão instalada: " + u.instalada + ". ";
 		if (!u.publicada) texto += "Não foi possível consultar a versão publicada agora.";
 		else if (u.haAtualizacao) texto += "Há uma versão nova disponível: " + u.publicada + ".";
@@ -915,13 +1009,19 @@ export const SETUP_JS = String.raw`(function () {
 		$("update-status").textContent = texto;
 		$("update-status").className = u.haAtualizacao ? "tone-warn" : "";
 		// Sem conseguir consultar a versão publicada, o botão continua disponível.
-		$("update-run").hidden = !(u.gatilhoConfigurado && (u.haAtualizacao || !u.publicada));
+		$("update-run").hidden = emCurso || !(u.gatilhoConfigurado && (u.haAtualizacao || !u.publicada));
 		$("update-run").textContent = u.haAtualizacao ? "Atualizar para " + u.publicada : "Atualizar agora";
 		$("update-setup").open = !u.gatilhoConfigurado;
 		$("update-setup").querySelector("summary").textContent = u.gatilhoConfigurado
 			? "Trocar o gatilho de atualização"
 			: "Configurar o gatilho de atualização";
 		renderTopo();
+		pintarAndamento();
+		if (u.andamento && u.andamento.situacao !== "concluida") vigiar();
+	}
+
+	async function renderUpdate(verificar) {
+		pintarUpdate(await api("GET", "/admin/atualizacao" + (verificar ? "?verificar=1" : "")));
 	}
 
 	// ---------- Atividade ----------
@@ -975,6 +1075,7 @@ export const SETUP_JS = String.raw`(function () {
 		document.title = TELAS[nome][0] + " · Cofre NFapi";
 		if (!$("drawer").hidden) fecharDetalhe();
 		fecharMenu();
+		pintarAndamento();
 		window.scrollTo(0, 0);
 		try {
 			await TELAS[nome][1]();
@@ -1016,6 +1117,8 @@ export const SETUP_JS = String.raw`(function () {
 		try {
 			state = await busy(ev.submitter, function () { return api("GET", "/admin/status"); });
 			atualizacao = await api("GET", "/admin/atualizacao").catch(function () { return null; });
+			paginaImplantacao = atualizacao ? atualizacao.implantacao : null;
+			if (atualizacao && atualizacao.andamento && atualizacao.andamento.situacao !== "concluida") vigiar();
 			$("secret").value = "";
 			$("vg-ambiente").value = state.allowProduction ? "producao" : "homologacao";
 			$("rl-ambiente").value = $("vg-ambiente").value;
@@ -1237,13 +1340,22 @@ export const SETUP_JS = String.raw`(function () {
 	});
 
 	$("update-run").addEventListener("click", async function (ev) {
-		if (!confirm("Atualizar o cofre agora? Ele continua funcionando durante o build; a nova versão entra no ar em um ou dois minutos.")) return;
+		if (!confirm("Atualizar o cofre agora? Ele continua funcionando enquanto o Cloudflare prepara a versão nova. Leva de um a três minutos e esta tela mostra o andamento.")) return;
 		try {
 			var data = await busy(ev.currentTarget, function () { return api("POST", "/admin/atualizacao"); });
-			message("update-message", data.mensagem + " Recarregue esta página depois.", "ok");
+			message("update-message", "");
+			if (atualizacao) {
+				atualizacao.andamento = data.andamento;
+				pintarUpdate(atualizacao);
+			}
 		} catch (err) {
 			message("update-message", err.message, "error");
 		}
+	});
+
+	// A página recarregada volta para a entrada: o segredo do cofre não fica guardado no navegador.
+	[$("update-reload"), $("update-banner-reload")].forEach(function (botao) {
+		botao.addEventListener("click", function () { location.reload(); });
 	});
 
 	$("hook-form").addEventListener("submit", async function (ev) {

@@ -261,6 +261,8 @@ describe("atualização pelo botão", () => {
 			haAtualizacao: true,
 			gatilhoConfigurado: false,
 			canal: "Quevenapp/nfapi@cofre-estavel",
+			implantacao: null,
+			andamento: null,
 		});
 		expect(nova.chamadas).toEqual([
 			{ url: "https://raw.githubusercontent.com/Quevenapp/nfapi/cofre-estavel/vault/package.json", method: "GET" },
@@ -320,6 +322,45 @@ describe("atualização pelo botão", () => {
 		const res = await pedir("POST", "/admin/atualizacao");
 		expect(res.status).toBe(502);
 		expect(await erro(res)).toBe("gatilho_recusado");
+		// Nada foi pedido: não há andamento a mostrar.
+		expect(((await (await pedir("GET", "/admin/atualizacao")).json()) as Json).andamento).toBeNull();
+	});
+
+	it("acompanha a atualização pedida até outro build responder", async () => {
+		const { pedir } = comRede("99.0.0");
+		const cofre = createApp(() => transport, { fetch: async () => new Response("", { status: 500 }) });
+		// O mesmo cofre, respondendo por um build do Cloudflare.
+		const noBuild = async (id: string) =>
+			(await (await cofre.request(`${ORIGIN}/admin/atualizacao`, comSegredo({}), { ...env, CF_VERSION_METADATA: { id, tag: "", timestamp: "" } })).json()) as Json;
+		await pedir("PUT", "/admin/atualizacao/gatilho", { url: GATILHO });
+
+		const antes = Date.now();
+		const disparo = (await (await pedir("POST", "/admin/atualizacao")).json()) as Json;
+		expect(disparo.andamento).toMatchObject({ situacao: "em_andamento", de: VAULT_VERSION, para: "99.0.0", concluidaEm: null });
+		expect(Date.parse(disparo.andamento.iniciadaEm)).toBeGreaterThanOrEqual(antes);
+		expect(((await (await pedir("GET", "/admin/atualizacao")).json()) as Json).andamento).toMatchObject({ situacao: "em_andamento" });
+
+		// Passados dez minutos sem versão nova, o build está demorando; depois de uma hora o pedido é esquecido.
+		const guardar = (p: Json) => env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'atualizacao_pedida'").bind(JSON.stringify(p)).run();
+		const pedido = JSON.parse((await env.DB.prepare("SELECT value FROM settings WHERE key = 'atualizacao_pedida'").first<{ value: string }>())?.value ?? "{}") as Json;
+		expect(pedido).toMatchObject({ de: VAULT_VERSION, implantacao: null, para: "99.0.0" });
+		await guardar({ ...pedido, em: Date.now() - 11 * 60_000 });
+		expect(((await (await pedir("GET", "/admin/atualizacao")).json()) as Json).andamento).toMatchObject({ situacao: "demorando" });
+		await guardar({ ...pedido, em: Date.now() - 61 * 60_000 });
+		expect(((await (await pedir("GET", "/admin/atualizacao")).json()) as Json).andamento).toBeNull();
+
+		// Outra versão respondendo: terminou.
+		await guardar({ ...pedido, de: "0.0.1" });
+		const concluida = ((await (await pedir("GET", "/admin/atualizacao")).json()) as Json).andamento;
+		expect(concluida).toMatchObject({ situacao: "concluida", de: "0.0.1", para: VAULT_VERSION });
+		expect(concluida.concluidaEm).toEqual(expect.any(String));
+		// A hora da conclusão fica gravada na primeira vez.
+		expect(((await (await pedir("GET", "/admin/atualizacao")).json()) as Json).andamento.concluidaEm).toBe(concluida.concluidaEm);
+
+		// A mesma versão publicada de novo: o que muda é o build.
+		await guardar({ ...pedido, implantacao: "build-a", para: null });
+		expect(await noBuild("build-a")).toMatchObject({ implantacao: "build-a", andamento: { situacao: "em_andamento", para: null } });
+		expect(await noBuild("build-b")).toMatchObject({ implantacao: "build-b", andamento: { situacao: "concluida", para: VAULT_VERSION } });
 	});
 });
 

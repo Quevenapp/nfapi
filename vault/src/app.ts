@@ -27,6 +27,8 @@ export interface AppEnv {
 	DB: D1Database;
 	DOCS: R2Bucket;
 	VAULT_SECRET: string;
+	/** Identificação da versão publicada no Cloudflare: muda a cada build, mesmo sem mudar a versão do cofre. */
+	CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string };
 }
 
 export type Ctx = { Bindings: AppEnv; Variables: { actor: string } };

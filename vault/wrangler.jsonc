@@ -9,6 +9,9 @@
 	// A cada 5 minutos: se houver NFC-e em contingência, confere a SEFAZ e transmite a fila.
 	"triggers": { "crons": ["*/5 * * * *"] },
 
+	// Identifica cada build publicado: é por onde o painel sabe que a atualização terminou.
+	"version_metadata": { "binding": "CF_VERSION_METADATA" },
+
 	// Segredo obrigatório: o deploy falha se não estiver definido.
 	"secrets": { "required": ["VAULT_SECRET"] },
 

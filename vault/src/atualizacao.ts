@@ -74,12 +74,65 @@ export async function estadoDaAtualizacao(c: C, callFetch: typeof fetch, forcar 
 	};
 }
 
+// ---------- Andamento da atualização pedida ----------
+
+/** Depois disso sem a versão nova no ar, o painel avisa que o build está demorando. */
+const DEMORA_MS = 10 * 60 * 1000;
+/** Depois disso o cofre esquece a atualização pedida. */
+const VALIDADE_MS = 60 * 60 * 1000;
+
+interface Pedido {
+	/** Versão e build que estavam no ar quando o gatilho foi disparado. */
+	de: string;
+	implantacao: string | null;
+	/** Versão publicada no canal naquele momento, quando era mais nova. */
+	para: string | null;
+	em: number;
+	concluidaEm?: number;
+}
+
+/** Identificação do build que está respondendo (nula fora do Cloudflare). */
+const implantacaoAtual = (c: C): string | null => c.env.CF_VERSION_METADATA?.id || null;
+
+/**
+ * Em que pé está a atualização pedida pelo botão. O cofre não enxerga o build
+ * do Cloudflare: ele sabe que terminou quando quem responde já é outra versão
+ * (ou outro build da mesma versão).
+ */
+async function andamentoDaAtualizacao(c: C, agora = Date.now()) {
+	const guardado = await store.getSetting(c.env.DB, "atualizacao_pedida");
+	if (!guardado) return null;
+	let p: Pedido;
+	try {
+		p = JSON.parse(guardado) as Pedido;
+	} catch {
+		return null;
+	}
+	if (agora - p.em > VALIDADE_MS) return null;
+	const atual = implantacaoAtual(c);
+	const noAr = VAULT_VERSION !== p.de || (p.implantacao !== null && atual !== null && atual !== p.implantacao);
+	if (noAr && !p.concluidaEm) {
+		p.concluidaEm = agora;
+		await store.setSetting(c.env.DB, "atualizacao_pedida", JSON.stringify(p));
+	}
+	return {
+		situacao: noAr ? ("concluida" as const) : agora - p.em > DEMORA_MS ? ("demorando" as const) : ("em_andamento" as const),
+		de: p.de,
+		para: noAr ? VAULT_VERSION : p.para,
+		iniciadaEm: new Date(p.em).toISOString(),
+		concluidaEm: p.concluidaEm ? new Date(p.concluidaEm).toISOString() : null,
+	};
+}
+
 export function registrarAtualizacao(app: Hono<Ctx>, callFetch: typeof fetch) {
 	app.get("/admin/atualizacao", async (c) => {
 		return c.json({
 			...(await estadoDaAtualizacao(c, callFetch, c.req.query("verificar") === "1")),
 			gatilhoConfigurado: (await lerGatilho(c)) !== null,
 			canal: `${CANAL.repo}@${CANAL.ref}`,
+			/** Build que respondeu: a página aberta compara com o que ela carregou para saber se ficou velha. */
+			implantacao: implantacaoAtual(c),
+			andamento: await andamentoDaAtualizacao(c),
 		});
 	});
 
@@ -115,6 +168,13 @@ export function registrarAtualizacao(app: Hono<Ctx>, callFetch: typeof fetch) {
 		if (!res.ok) {
 			return fail(c, 502, "gatilho_recusado", `O Cloudflare recusou o gatilho (HTTP ${res.status}). Confira se o gancho de implantação ainda existe.`);
 		}
-		return c.json({ ok: true, mensagem: "Build iniciado. A nova versão entra no ar em um ou dois minutos." });
+		const { publicada, haAtualizacao } = await estadoDaAtualizacao(c, callFetch);
+		const pedido: Pedido = { de: VAULT_VERSION, implantacao: implantacaoAtual(c), para: haAtualizacao ? publicada : null, em: Date.now() };
+		await store.setSetting(c.env.DB, "atualizacao_pedida", JSON.stringify(pedido));
+		return c.json({
+			ok: true,
+			mensagem: "Build iniciado. A nova versão entra no ar em um a três minutos.",
+			andamento: await andamentoDaAtualizacao(c),
+		});
 	});
 }

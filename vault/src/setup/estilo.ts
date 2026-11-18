@@ -114,6 +114,40 @@ form > .primary, form > .secondary { margin-top: 14px; }
 .tone-bad { color: var(--danger); font-weight: 600; }
 .tone-warn { color: var(--warning); font-weight: 600; }
 
+/* ---------- Andamento da atualização ---------- */
+.banner {
+	display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 0 0 16px; padding: 10px 14px;
+	color: var(--info); background: var(--info-bg); border: 1px solid color-mix(in srgb, var(--info) 22%, transparent); border-radius: var(--radius); font-size: 13px;
+}
+.banner[hidden] { display: none; }
+.banner[data-tone="success"] { color: var(--success); background: var(--success-bg); border-color: color-mix(in srgb, var(--success) 22%, transparent); }
+.banner[data-tone="warning"] { color: var(--warning); background: var(--warning-bg); border-color: color-mix(in srgb, var(--warning) 22%, transparent); }
+.banner span { flex: 1 1 240px; font-weight: 600; }
+.banner a { color: inherit; font-weight: 600; }
+.progress-box { margin-top: 16px; padding: 16px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-alt); }
+.progress-box h3 { margin: 0; font-size: 15px; }
+.progress-box button { margin-top: 14px; }
+.progress-box p { margin: 14px 0 0; }
+.progress { height: 4px; margin-top: 12px; overflow: hidden; border-radius: 2px; background: var(--border); }
+.progress::after { content: ""; display: block; width: 35%; height: 100%; border-radius: 2px; background: var(--accent); animation: progresso 1.6s ease-in-out infinite; }
+.progress[data-state="done"]::after { width: 100%; background: var(--success); animation: none; }
+.progress[data-state="late"]::after { width: 100%; background: var(--warning); animation: none; }
+@keyframes progresso { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+.steps { display: grid; gap: 10px; margin: 14px 0 0; padding: 0; list-style: none; }
+.steps li { display: grid; grid-template-columns: 18px 1fr; gap: 0 10px; align-items: start; }
+.steps li::before { content: ""; width: 12px; height: 12px; margin-top: 4px; border: 2px solid var(--border-strong, var(--border)); border-radius: 50%; }
+.steps li[data-state="done"]::before { border-color: var(--success); background: var(--success); }
+.steps li[data-state="active"]::before { border-color: var(--accent); border-top-color: transparent; animation: girar 0.9s linear infinite; }
+.steps li[data-state="late"]::before { border-color: var(--warning); }
+.steps li[data-state="pending"] { color: var(--muted); }
+.steps li strong { grid-column: 2; font-weight: 600; }
+.steps li small { grid-column: 2; color: var(--muted); font-size: 12px; }
+@keyframes girar { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+	.progress::after { width: 100%; opacity: 0.5; animation: none; }
+	.steps li[data-state="active"]::before { border-top-color: var(--accent); animation: none; }
+}
+
 /* ---------- Entrada ---------- */
 .login { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
 .login-card { width: min(420px, 100%); padding: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: var(--shadow-raised); }
