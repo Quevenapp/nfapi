@@ -7,6 +7,7 @@ import { nfeJson } from "./api-nfe";
 import { distribuicaoJson, recebidaJson } from "./api-recebidas";
 import type { AppEnv, Ctx } from "./app";
 import { filho, primeiro, raizDoXml, texto } from "./danfe/leitura";
+import { adotarNotasArquivadas } from "./emissao/arquivadas";
 import * as banco from "./emissao/banco";
 import type { Ambiente } from "./fiscal/dados";
 import type { SituacaoRecebida } from "./nfe/distribuicao";
@@ -55,6 +56,8 @@ export const emitidaJson = (e: banco.Emission) => ({
  * arquivado. Um punhado por chamada, para não pesar em nenhuma.
  */
 export async function completarResumos(env: AppEnv, limite = 25): Promise<number> {
+	// Antes, as NFS-e que o cofre só tem como arquivo ganham o seu registro.
+	await adotarNotasArquivadas(env, limite);
 	for (const e of await banco.listSemResumo(env.DB, limite)) {
 		let resumo: banco.ResumoDaEmissao = {};
 		const objeto = e.documentKey ? await store.getDocument(env.DOCS, e.documentKey) : null;

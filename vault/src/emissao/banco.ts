@@ -410,6 +410,28 @@ export async function insertEmission(db: D1Database, e: Emission): Promise<boole
 	}
 }
 
+/**
+ * Registra uma nota que o cofre só tinha como arquivo, já com o resumo do
+ * painel. Devolve false se a nota (ou o número da série) já tiver registro.
+ */
+export async function adotarEmissao(db: D1Database, e: Emission): Promise<boolean> {
+	const r = await db
+		.prepare(
+			`INSERT OR IGNORE INTO emissions (id, doc_id, kind, environment, serie, number, document_id, status, access_key,
+			 fiscal_number, messages, document_key, extra, created_at, updated_at, issued_at, issued_day, value,
+			 recipient_doc, recipient_name, summarized)
+			 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '[]', ?11, '{}', ?12, ?12, ?13, ?14, ?15, ?16, ?17, 1
+			 WHERE NOT EXISTS (SELECT 1 FROM emissions WHERE access_key = ?9)`,
+		)
+		.bind(
+			e.id, e.docId, e.kind, e.environment, e.serie, e.number, e.documentId, e.status, e.accessKey,
+			e.fiscalNumber, e.documentKey, e.createdAt, e.issuedAt ?? null, diaDe(e.issuedAt, e.createdAt), e.value ?? null,
+			e.recipientDoc ?? null, e.recipientName ?? null,
+		)
+		.run();
+	return (r.meta.changes ?? 0) > 0;
+}
+
 export async function updateEmission(
 	db: D1Database,
 	id: string,

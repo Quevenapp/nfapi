@@ -880,7 +880,7 @@ describe("painel: visão geral, listagens e detalhe", () => {
 			`docs/nfse/producao/2026/11/${chave(5)}-nfse.xml`,
 			`<NFSe><infNFSe Id="NFS${chave(5)}"><DPS><infDPS><toma><CNPJ>99888777000166</CNPJ><xNome>Cliente Ltda</xNome></toma></infDPS></DPS></infNFSe></NFSe>`,
 		);
-		expect((await admin("GET", "/admin/painel/emitidas?ambiente=producao")).json.total).toBe(0);
+		expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM emissions WHERE kind = 'nfse'").first()).toEqual({ n: 0 });
 
 		const migracao = env.TEST_MIGRATIONS.find((m) => m.name.startsWith("0009"));
 		expect(migracao?.queries).toHaveLength(2);
@@ -904,6 +904,44 @@ describe("painel: visão geral, listagens e detalhe", () => {
 		]);
 		const detalhe = (await admin("GET", `/admin/painel/emitidas/${lista.itens[0].id}`)).json;
 		expect(detalhe.arquivos.map((x: Json) => x.tipo)).toEqual(["nfse", "dps", "cancelamento"]);
+	});
+
+	it("registra a NFS-e arquivada sem série nem número nos metadados, lendo o XML", async () => {
+		// As primeiras notas foram arquivadas só com o tipo e a chave de acesso.
+		const chave = (numero: number) => `353870922${CNPJ_TESTE}${String(numero).padStart(13, "0")}26111234567890`;
+		const criada = Date.parse("2026-11-16T16:50:00.000Z");
+		const arquivar = async (key: string, meta: Json, xml?: string) => {
+			await env.DB.prepare("INSERT INTO documents (key, content_type, size, sha256, meta, created_at) VALUES (?, 'application/xml', 1, 'x', ?, ?)").bind(key, JSON.stringify(meta), criada).run();
+			if (xml) await env.DOCS.put(`docs/${key}`, xml);
+		};
+		const nota = (numero: number, dps: number, toma = "") =>
+			`<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse"><infNFSe Id="NFS${chave(numero)}"><nNFSe>${numero}</nNFSe><DPS><infDPS Id="DPS35387092${CNPJ_TESTE}00900${String(dps).padStart(15, "0")}">` +
+			`<tpAmb>1</tpAmb><dhEmi>2026-11-16T13:50:00-03:00</dhEmi><serie>900</serie><nDPS>${dps}</nDPS>${toma}<valores><vServPrest><vServ>1.00</vServ></vServPrest></valores></infDPS></DPS></infNFSe></NFSe>`;
+		const base = (numero: number) => `nfse/producao/2026/11/${chave(numero)}`;
+		await arquivar(`${base(5)}-nfse.xml`, { tipo: "nfse", chaveAcesso: chave(5), emissao: "nfs_central_1" }, nota(5, 1, "<toma><CNPJ>99888777000166</CNPJ><xNome>Cliente Ltda</xNome></toma>"));
+		await arquivar(`${base(5)}-dps.xml`, { tipo: "dps", chaveAcesso: chave(5), emissao: "nfs_central_1" });
+		// Cancelada, com o evento arquivado.
+		await arquivar(`${base(7)}-nfse.xml`, { tipo: "nfse", chaveAcesso: chave(7), emissao: "nfs_central_3" }, nota(7, 3));
+		await arquivar(`${base(7)}-cancelamento.xml`, { tipo: "cancelamento", chaveAcesso: chave(7) });
+		// Sem o XML não há de onde tirar a série: fica de fora, sem travar as outras.
+		await arquivar(`${base(8)}-nfse.xml`, { tipo: "nfse", chaveAcesso: chave(8), emissao: "nfs_central_4" });
+
+		const listar = async () => (await admin("GET", "/admin/painel/emitidas?ambiente=producao&modelo=nfse&de=2026-11-16&ate=2026-11-16")).json;
+		const lista = await listar();
+		expect(lista).toMatchObject({ total: 2, valor: 2, resumosPendentes: 0 });
+		expect(lista.itens.map((n: Json) => [n.numero, n.numeroDps, n.serie, n.situacao, n.valor, n.emitidaEm, n.destinatario?.nome ?? null])).toEqual([
+			["7", 3, "900", "cancelada", 1, "2026-11-16T13:50:00-03:00", null],
+			["5", 1, "900", "autorizada", 1, "2026-11-16T13:50:00-03:00", "Cliente Ltda"],
+		]);
+		const registro = await env.DB.prepare("SELECT doc_id, document_id, document_key FROM emissions WHERE access_key = ?").bind(chave(5)).first();
+		expect(registro).toEqual({ doc_id: CNPJ_TESTE, document_id: `DPS35387092${CNPJ_TESTE}00900000000000000001`, document_key: `${base(5)}-nfse.xml` });
+		expect(await env.DB.prepare("SELECT last_number FROM series WHERE kind = 'nfse' AND environment = 'producao' AND serie = '900'").first()).toEqual({ last_number: 3 });
+		const detalhe = (await admin("GET", `/admin/painel/emitidas/${lista.itens[1].id}`)).json;
+		expect(detalhe.arquivos.map((x: Json) => x.tipo)).toEqual(["nfse", "dps"]);
+
+		// Conferidas uma vez, o cofre não procura de novo nem duplica.
+		expect(await env.DB.prepare("SELECT value FROM settings WHERE key = 'notas_arquivadas_conferidas'").first()).toEqual({ value: "fim" });
+		expect((await listar()).total).toBe(2);
 	});
 
 	it("lista as notas recebidas com filtros e mostra os eventos no detalhe", async () => {
