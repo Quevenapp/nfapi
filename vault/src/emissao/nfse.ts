@@ -3,6 +3,7 @@
 //   emitir:   reserva o número -> monta a DPS -> assina -> transmite à SEFIN
 //             -> arquiva a NFS-e autorizada.
 //   cancelar: monta o evento e101101 -> assina -> transmite -> arquiva o evento.
+//   conferir: consulta os eventos de cancelamento da nota -> arquiva o que achar.
 
 import { type Ambiente, NFSE_NACIONAL, nfseAmbiente } from "../fiscal/dados";
 import {
@@ -15,6 +16,7 @@ import {
 	comDeclaracaoXml,
 	corpoEmissao,
 	corpoEvento,
+	lerConsultaEvento,
 	lerRespostaEmissao,
 	lerRespostaEvento,
 	montarDps,
@@ -312,7 +314,12 @@ export async function cancelarNfse(
 			: falha(502, "sem_resposta_conclusiva", [doErro(err)]);
 	}
 
-	if (resposta.tipo === "rejeitada") return falha(422, "cancelamento_rejeitado", resposta.rejeicoes);
+	if (resposta.tipo === "rejeitada") {
+		// A recusa pode ser porque a nota já foi cancelada por fora do cofre (no portal nacional, por exemplo).
+		const conferida = await conferirNfse(d1, ops, emission).catch(() => null);
+		if (conferida?.ok && conferida.emission.status === "cancelada") return { ok: true, emission: conferida.emission, jaCancelada: true };
+		return falha(422, "cancelamento_rejeitado", resposta.rejeicoes);
+	}
 	if (resposta.tipo === "indefinida") {
 		return falha(502, "sem_resposta_conclusiva", [{ codigo: "sem_resposta_conclusiva", descricao: resposta.detalhe }]);
 	}
@@ -334,4 +341,73 @@ export async function cancelarNfse(
 	});
 	const atual = await banco.updateEmission(d1, emission.id, { status: "cancelada", messages: [] });
 	return { ok: true, emission: atual, jaCancelada: false };
+}
+
+/**
+ * Eventos que cancelam a NFS-e: pedido pelo emitente, por substituição,
+ * deferido por análise fiscal e por ofício do município.
+ */
+const EVENTOS_DE_CANCELAMENTO = ["101101", "105102", "105104", "305101"] as const;
+
+export type ResultadoConferencia =
+	/** `alterada`: a SEFIN tinha um cancelamento que o cofre não conhecia. */
+	| { ok: true; emission: banco.Emission; alterada: boolean }
+	| { ok: false; status: 409 | 502; codigo: string; mensagem: string };
+
+/**
+ * Confere na SEFIN Nacional se a NFS-e foi cancelada por fora do cofre (no
+ * portal nacional, por outro sistema ou pelo município). Achando o evento,
+ * arquiva-o e marca a nota como cancelada. Nada é registrado no governo.
+ */
+export async function conferirNfse(d1: D1Database, ops: Operacoes, emission: banco.Emission): Promise<ResultadoConferencia> {
+	if (emission.status === "cancelada") return { ok: true, emission, alterada: false };
+	if (emission.status !== "autorizada" || !emission.accessKey) {
+		return { ok: false, status: 409, codigo: "nfse_nao_autorizada", mensagem: "Só é possível conferir uma NFS-e autorizada." };
+	}
+	const semResposta = (detalhe: string): ResultadoConferencia => ({ ok: false, status: 502, codigo: "sem_resposta_conclusiva", mensagem: detalhe });
+	const chave = emission.accessKey;
+	const config = nfseAmbiente(emission.environment);
+
+	for (const tipo of EVENTOS_DE_CANCELAMENTO) {
+		let lida: Awaited<ReturnType<typeof lerConsultaEvento>>;
+		let journalKey: string | undefined;
+		try {
+			const res = await ops.transmit({
+				url: `${config.sefin}/nfse/${chave}/eventos/${tipo}/1`,
+				method: "GET",
+				headers: { accept: "application/json" },
+				ref: `${emission.id}:conferencia`,
+			});
+			journalKey = res.journalKey;
+			lida = await lerConsultaEvento(res.status, base64ParaTexto(res.bodyB64));
+		} catch (err) {
+			if (!(err instanceof OperacaoError)) throw err;
+			return semResposta(err.message);
+		}
+		if (lida.tipo === "inexistente") continue;
+		if (lida.tipo === "indefinida") return semResposta(`A SEFIN não respondeu à consulta do evento ${tipo}: ${lida.detalhe}`);
+		// O evento precisa ser desta nota e do tipo pedido.
+		if (!lida.xml.includes(chave) || !lida.xml.includes(`e${tipo}`)) {
+			return semResposta(`A SEFIN devolveu um evento que não é o ${tipo} desta nota.`);
+		}
+
+		const destino = emission.documentKey
+			? emission.documentKey.replace(/-nfse\.xml$/, "-cancelamento.xml")
+			: `nfse/${emission.environment}/eventos/${chave}-cancelamento.xml`;
+		await ops.putDocument(destino, lida.xml, {
+			contentType: "application/xml",
+			meta: {
+				tipo: "cancelamento",
+				chaveAcesso: chave,
+				emissao: emission.id,
+				evento: tipo,
+				/** O cancelamento não foi pedido por este cofre: veio da consulta à SEFIN. */
+				origem: "consulta",
+				canceladaEm: /<dhProc>([^<]+)<\/dhProc>/.exec(lida.xml)?.[1] ?? /<dhEvento>([^<]+)<\/dhEvento>/.exec(lida.xml)?.[1] ?? new Date().toISOString(),
+				diario: journalKey ?? null,
+			},
+		});
+		return { ok: true, emission: await banco.updateEmission(d1, emission.id, { status: "cancelada", messages: [] }), alterada: true };
+	}
+	return { ok: true, emission, alterada: false };
 }

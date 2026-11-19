@@ -915,6 +915,19 @@ export function contratoOpenApi(): Json {
 					responses: { "200": resposta("Cancelada, agora ou antes (`repetido`).", comRepetido(nfse)), ...erros(400, 401, 403, 404, 409, 422, 502) },
 				},
 			},
+			"/v1/nfse/{id}/conferir": {
+				post: {
+					tags: ["NFS-e"],
+					summary: "Confere na SEFIN se a NFS-e foi cancelada por fora do cofre",
+					description:
+						"Para a nota cancelada no portal nacional, por outro sistema ou pelo município. O cofre consulta os eventos de cancelamento da nota na SEFIN Nacional; achando um, arquiva o evento e a emissão passa a `cancelada`. Nada é registrado no governo. `alterada` diz se a situação mudou nesta chamada.",
+					parameters: [id],
+					responses: {
+						"200": resposta("A emissão, com a situação conferida.", { allOf: [nfse, { type: "object", properties: { alterada: { type: "boolean" } } }] }),
+						...erros(401, 403, 404, 409, 502),
+					},
+				},
+			},
 			"/v1/inutilizacoes": {
 				post: {
 					tags: ["Numeração"],

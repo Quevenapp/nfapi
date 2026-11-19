@@ -469,6 +469,27 @@ export const SETUP_JS = String.raw`(function () {
 				});
 			});
 			corpo.appendChild(cancelar);
+			if (n.modelo === "nfse") {
+				// A nota cancelada por fora do cofre continua "autorizada" aqui até a conferência.
+				corpo.appendChild(el("h3", { text: "Situação na SEFIN" }));
+				corpo.appendChild(el("p", { class: "hint", text: "Se a nota foi cancelada fora deste cofre (no portal nacional, por exemplo), a conferência traz o cancelamento para cá. Nada é enviado ao governo." }));
+				var conferir = el("button", { type: "button", class: "secondary small-button", text: "Conferir na SEFIN" });
+				conferir.addEventListener("click", async function () {
+					message("drawer-message", "Consultando a SEFIN…");
+					try {
+						var r = await busy(conferir, function () { return api("POST", "/admin/notas/conferir", { id: n.id }); });
+						if (r.alterada) {
+							await renderEmitidas();
+							await abrirEmitida(resumo, null, "A SEFIN registra o cancelamento desta nota. A situação foi atualizada e o evento está nos arquivos.");
+						} else {
+							message("drawer-message", "A SEFIN não registra cancelamento para esta nota: ela continua autorizada.", "ok");
+						}
+					} catch (err) {
+						message("drawer-message", err.message, "error");
+					}
+				});
+				corpo.appendChild(conferir);
+			}
 		}
 	}
 

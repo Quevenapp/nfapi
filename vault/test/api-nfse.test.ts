@@ -10,6 +10,10 @@ const COFRE = "https://nfapi-cofre.empresa-teste.workers.dev";
 const CHAVE = `35${"0".repeat(46)}77`;
 const NFSE_XML = `<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infNFSe Id="NFS${CHAVE}"><nNFSe>77</nNFSe></infNFSe></NFSe>`;
 const EVENTO_XML = `<evento xmlns="http://www.sped.fazenda.gov.br/nfse"><infEvento Id="EVT${CHAVE}101101"/></evento>`;
+/** O evento como a consulta da SEFIN o devolve, com o pedido que o gerou. */
+const EVENTO_CONSULTADO =
+	`<evento xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infEvento Id="EVT${CHAVE}101101001"><dhProc>2026-11-16T15:10:00-03:00</dhProc>` +
+	`<pedRegEvento><infPedReg Id="PRE${CHAVE}101101"><chNFSe>${CHAVE}</chNFSe><e101101><xDesc>Cancelamento de NFS-e</xDesc></e101101></infPedReg></pedRegEvento></infEvento></evento>`;
 
 type Resposta = { status: number; corpo: unknown };
 type Json = Record<string, any>;
@@ -228,6 +232,69 @@ describe("o cofre como API de emissão", () => {
 		sefin.responder = async () => ({ status: 400, corpo: { erros: [{ Codigo: "E0840", Descricao: "Prazo expirado" }] } });
 		const outra = (await emitir()).json;
 		expect(outra.erro.codigo).toBe("nfse_rejeitada");
+	});
+
+	it("confere na SEFIN o cancelamento feito por fora do cofre", async () => {
+		const nota = (await emitir()).json;
+		const consultas = () => sefin.chamadas.filter((c) => c.method === "GET").map((c) => c.url.split("/eventos/")[1]);
+		// Sem evento, a SEFIN responde 400 só com os dados do processamento.
+		const semEvento: Resposta = { status: 400, corpo: { tipoAmbiente: 2, versaoAplicativo: "SefinNacional_1.6.0", dataHoraProcessamento: "2026-11-16T15:00:00-03:00" } };
+
+		sefin.responder = async () => semEvento;
+		const intacta = await cliente("POST", `/v1/nfse/${nota.id}/conferir`, chave);
+		expect(intacta.status).toBe(200);
+		expect(intacta.json).toMatchObject({ id: nota.id, situacao: "autorizada", alterada: false });
+		// Os quatro eventos que cancelam uma NFS-e, e nada registrado no governo.
+		expect(consultas()).toEqual(["101101/1", "105102/1", "105104/1", "305101/1"]);
+		expect(sefin.chamadas.at(-1)?.url).toBe(`https://sefin.producaorestrita.nfse.gov.br/API/SefinNacional/nfse/${CHAVE}/eventos/305101/1`);
+
+		// Resposta que não diz nem sim nem não: a situação fica como estava.
+		sefin.responder = async () => ({ status: 500, corpo: "<html>erro</html>" });
+		const incerta = await cliente("POST", `/v1/nfse/${nota.id}/conferir`, chave);
+		expect(incerta.status).toBe(502);
+		expect(incerta.json.erro.codigo).toBe("sem_resposta_conclusiva");
+		// Evento de outra nota não cancela esta.
+		sefin.responder = async () => ({ status: 200, corpo: { eventoXmlGZipB64: await gzipBase64(EVENTO_CONSULTADO.replaceAll(CHAVE, `36${CHAVE.slice(2)}`)) } });
+		expect((await cliente("POST", `/v1/nfse/${nota.id}/conferir`, chave)).status).toBe(502);
+		expect((await cliente("GET", `/v1/nfse/${nota.id}`, chave)).json.situacao).toBe("autorizada");
+
+		// Cancelada no portal nacional: o evento vem em Base64 sobre GZip+Base64, dentro de `eventos`.
+		sefin.chamadas = [];
+		sefin.responder = async (req) =>
+			req.url.endsWith("/eventos/101101/1")
+				? { status: 200, corpo: { tipoAmbiente: 2, eventos: [{ chaveAcesso: CHAVE, tipoEvento: 101101, numeroPedidoRegistroEvento: 1, arquivoXml: btoa(await gzipBase64(EVENTO_CONSULTADO)) }] } }
+				: semEvento;
+		const res = await admin("/admin/notas/conferir", { method: "POST", body: JSON.stringify({ id: nota.id }) });
+		expect(res.status).toBe(200);
+		expect((await res.json()) as Json).toMatchObject({ alterada: true, nfse: { id: nota.id, situacao: "cancelada" } });
+		expect(consultas()).toEqual(["101101/1"]);
+
+		// O evento fica arquivado ao lado da nota, com a data em que a SEFIN o registrou.
+		expect((await cliente("GET", `/v1/nfse/${nota.id}/cancelamento/xml`, chave)).text).toBe(EVENTO_CONSULTADO);
+		const notas = ((await (await admin("/admin/notas")).json()) as Json).notas;
+		expect(notas[0]).toMatchObject({ situacao: "cancelada", canceladaEm: "2026-11-16T15:10:00-03:00" });
+		expect(notas[0].arquivos.map((a: Json) => a.tipo)).toEqual(["nfse", "dps", "cancelamento"]);
+
+		// Conferir de novo não consulta nada; nota de outro modelo ou inexistente não tem conferência.
+		sefin.chamadas = [];
+		expect((await cliente("POST", `/v1/nfse/${nota.id}/conferir`, chave)).json).toMatchObject({ situacao: "cancelada", alterada: false });
+		expect(sefin.chamadas).toHaveLength(0);
+		expect((await cliente("POST", "/v1/nfse/nfs_inexistente/conferir", chave)).status).toBe(404);
+		expect((await admin("/admin/notas/conferir", { method: "POST", body: JSON.stringify({ id: "nfs_inexistente" }) })).status).toBe(404);
+	});
+
+	it("o cancelamento recusado confere se a nota já estava cancelada por fora", async () => {
+		const nota = (await emitir()).json;
+		const recusa: Resposta = { status: 400, corpo: { erros: [{ Codigo: "E0840", Descricao: "Evento já registrado para a NFS-e" }] } };
+		sefin.responder = async (req) => (req.method === "POST" ? recusa : { status: 404, corpo: {} });
+		const recusada = await cliente("POST", `/v1/nfse/${nota.id}/cancelar`, chave, motivo);
+		expect(recusada.status).toBe(422);
+		expect(recusada.json.erro.codigo).toBe("cancelamento_rejeitado");
+
+		sefin.responder = async (req) => (req.method === "POST" ? recusa : { status: 200, corpo: { eventoXmlGZipB64: await gzipBase64(EVENTO_CONSULTADO) } });
+		const cancelada = await cliente("POST", `/v1/nfse/${nota.id}/cancelar`, chave, motivo);
+		expect(cancelada.status).toBe(200);
+		expect(cancelada.json).toMatchObject({ situacao: "cancelada", repetido: true });
 	});
 
 	it("exige chave de API válida, e a chave não dá acesso ao painel", async () => {

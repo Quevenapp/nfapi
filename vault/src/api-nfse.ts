@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { AppEnv, Ctx } from "./app";
 import * as banco from "./emissao/banco";
 import { cancelarNfe } from "./emissao/nfe";
-import { cancelarNfse, emitirNfse } from "./emissao/nfse";
+import { cancelarNfse, conferirNfse, emitirNfse } from "./emissao/nfse";
 import { CancelamentoNfe } from "./nfe/schema";
 import { CancelamentoInput, NfseInput } from "./nfse";
 import { OperacaoError, abrirOperacoes } from "./operacoes";
@@ -190,6 +190,24 @@ export function registrarApiNfse(app: Hono<Ctx>, makeTransport: (env: AppEnv) =>
 		return c.json({ ...nfseJson(r.emission), repetido: r.jaCancelada });
 	});
 
+	// Traz para o cofre o cancelamento feito por fora dele (portal nacional, outro sistema, município).
+	app.post("/v1/nfse/:id/conferir", async (c) => {
+		const chave = await autenticar(c);
+		if (chave instanceof Response) return chave;
+		const emission = await buscar(c);
+		if (!emission) return erro(c, 404, "nao_encontrado", "Emissão inexistente.");
+		if (chave.scope === "homologacao" && emission.environment !== "homologacao") {
+			return erro(c, 403, "chave_somente_homologacao", "Esta chave de API só opera em homologação.");
+		}
+
+		const ops = await operacoes(c, makeTransport(c.env), `chave:${chave.id}`);
+		if (ops instanceof Response) return ops;
+		const r = await conferirNfse(c.env.DB, ops, emission);
+		if (!r.ok) return erro(c, r.status, r.codigo, r.mensagem);
+		// `alterada`: a situação mudou nesta conferência.
+		return c.json({ ...nfseJson(r.emission), alterada: r.alterada });
+	});
+
 	// ---------- Chaves de API (tela /setup) ----------
 
 	app.get("/admin/chaves", async (c) => c.json({ chaves: (await banco.listApiKeys(c.env.DB)).map(chaveJson) }));
@@ -221,6 +239,33 @@ export function registrarApiNfse(app: Hono<Ctx>, makeTransport: (env: AppEnv) =>
 		await store.audit(c.env.DB, { action: "chave.revogar", actor: "admin", outcome: "ok", detail: { chave: id } });
 		return c.json({ ok: true });
 	});
+}
+
+/**
+ * Conferência da situação pedida pelo painel do emitente: procura na SEFIN um
+ * cancelamento feito por fora do cofre. Só a NFS-e tem essa consulta.
+ */
+export async function conferirPeloPainel(c: C, transport: Transport, id: string): Promise<Response> {
+	const recusar = (status: Status, code: string, message: string) => c.json({ error: { code, message } }, status);
+	const emission = await banco.getEmission(c.env.DB, id);
+	if (emission?.kind !== "nfse") return recusar(404, "nao_encontrado", "NFS-e inexistente neste cofre.");
+
+	let ops: Awaited<ReturnType<typeof abrirOperacoes>>;
+	try {
+		ops = await abrirOperacoes(c.env, transport, "admin");
+	} catch (err) {
+		if (!(err instanceof OperacaoError)) throw err;
+		return recusar(409, err.code, err.message);
+	}
+	const r = await conferirNfse(c.env.DB, ops, emission);
+	await store.audit(c.env.DB, {
+		action: "nota.conferir",
+		actor: "admin",
+		outcome: r.ok ? (r.alterada ? "cancelada" : "ok") : r.codigo,
+		detail: { chaveAcesso: emission.accessKey, modelo: emission.kind },
+	});
+	if (!r.ok) return recusar(r.status, r.codigo, r.mensagem);
+	return c.json({ nfse: nfseJson(r.emission), alterada: r.alterada });
 }
 
 /**

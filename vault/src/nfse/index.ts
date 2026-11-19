@@ -2,6 +2,7 @@ export { type DpsContexto, type DpsMontada, NAMESPACE, idDps, montarDps } from "
 export { CancelamentoInput, type EventoContexto, montarPedidoCancelamento } from "./evento";
 export { Endereco, NfseInput, RegimeTributario, Tomador } from "./schema";
 export {
+	type ConsultaEvento,
 	type Mensagem,
 	type RespostaEmissao,
 	type RespostaEvento,
@@ -11,6 +12,7 @@ export {
 	corpoEvento,
 	gunzipBase64,
 	gzipBase64,
+	lerConsultaEvento,
 	lerMensagens,
 	lerRespostaEmissao,
 	lerRespostaEvento,

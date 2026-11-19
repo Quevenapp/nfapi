@@ -127,6 +127,62 @@ export async function lerRespostaEvento(status: number, corpo: string): Promise<
 	};
 }
 
+export type ConsultaEvento =
+	/** `xml` é o evento como a SEFIN Nacional o registrou. */
+	| { tipo: "encontrado"; xml: string }
+	/** A nota não tem evento desse tipo. */
+	| { tipo: "inexistente" }
+	| { tipo: "indefinida"; detalhe: string };
+
+/**
+ * O XML de um evento consultado. A SEFIN já o devolveu em GZip+Base64 e em
+ * Base64 sobre GZip+Base64, conforme a versão: as camadas são desfeitas até
+ * aparecer o XML.
+ */
+async function xmlDoEvento(valor: unknown): Promise<string | null> {
+	if (typeof valor !== "string") return null;
+	let atual = valor.trim();
+	for (let camada = 0; camada < 4; camada++) {
+		if (atual.replace(/^﻿/, "").startsWith("<")) return atual;
+		try {
+			const bytes = base64ParaBytes(atual);
+			const gzip = bytes[0] === 0x1f && bytes[1] === 0x8b;
+			atual = new TextDecoder().decode(gzip ? await transformar(bytes, new DecompressionStream("gzip")) : bytes).trim();
+		} catch {
+			return null;
+		}
+	}
+	return null;
+}
+
+/** Resposta do GET /nfse/{chave}/eventos/{tipo}/{sequência}. */
+export async function lerConsultaEvento(status: number, corpo: string): Promise<ConsultaEvento> {
+	let json: Record<string, unknown>;
+	try {
+		json = JSON.parse(corpo) as Record<string, unknown>;
+	} catch {
+		return { tipo: "indefinida", detalhe: `Resposta HTTP ${status} fora do formato esperado.` };
+	}
+	if (!json || typeof json !== "object") return { tipo: "indefinida", detalhe: `Resposta HTTP ${status} fora do formato esperado.` };
+
+	const erros = lerMensagens(json.erros ?? json.Erros ?? json.erro);
+	if (status >= 200 && status < 300) {
+		const eventos = Array.isArray(json.eventos) ? (json.eventos as Record<string, unknown>[]) : null;
+		for (const bruto of [json.eventoXmlGZipB64, ...(eventos ?? []).map((e) => e?.arquivoXml ?? e?.eventoXmlGZipB64)]) {
+			const xml = await xmlDoEvento(bruto);
+			if (xml) return { tipo: "encontrado", xml };
+		}
+		if (eventos?.length === 0) return { tipo: "inexistente" };
+		return { tipo: "indefinida", detalhe: `Resposta HTTP ${status} sem o XML do evento.` };
+	}
+	// Evento que não existe: 404, ou 400 só com os dados do processamento, sem mensagem de erro.
+	if (status === 404 || (status === 400 && erros.length === 0)) return { tipo: "inexistente" };
+	return {
+		tipo: "indefinida",
+		detalhe: erros[0] ? `HTTP ${status}: ${erros[0].codigo} ${erros[0].descricao}`.trim() : `Resposta HTTP ${status} sem o evento nem mensagens de erro.`,
+	};
+}
+
 export async function lerRespostaEmissao(status: number, corpo: string): Promise<RespostaEmissao> {
 	let json: Record<string, unknown>;
 	try {

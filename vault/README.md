@@ -192,6 +192,15 @@ curl -X POST https://SEU-COFRE.workers.dev/v1/nfse/ID_DA_EMISSAO/cancelar \
   -d '{ "motivo": "erro_emissao", "justificativa": "Nota emitida com o valor incorreto" }'
 ```
 
+Nota cancelada por fora do cofre (no portal nacional, por outro sistema ou pelo município) continua `autorizada` aqui até ser conferida. A conferência consulta os eventos de cancelamento da nota na SEFIN Nacional e, achando um, arquiva o evento e passa a emissão para `cancelada`; nada é registrado no governo. No painel, é o botão **Conferir na SEFIN** no detalhe da nota. Pela API:
+
+```bash
+curl -X POST https://SEU-COFRE.workers.dev/v1/nfse/ID_DA_EMISSAO/conferir \
+  -H "Authorization: Bearer nfapi_SUA_CHAVE"
+```
+
+A resposta é a emissão, com `alterada: true` quando a situação mudou. O cofre não confere sozinho: ele só consulta quando alguém pede, ou quando um cancelamento é recusado pela SEFIN.
+
 Os campos aceitos estão no contrato; os schemas que os validam ficam em [`src/nfse/schema.ts`](src/nfse/schema.ts) e [`src/nfe/schema.ts`](src/nfe/schema.ts).
 
 ## Atualização

@@ -10,7 +10,7 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { registrarApiDanfe } from "./api-danfe";
 import { registrarApiNfe } from "./api-nfe";
-import { cancelarPeloPainel, registrarApiNfse } from "./api-nfse";
+import { cancelarPeloPainel, conferirPeloPainel, registrarApiNfse } from "./api-nfse";
 import { registrarApiPainel } from "./api-painel";
 import { registrarApiRecebidas } from "./api-recebidas";
 import { registrarApiRelatorios } from "./api-relatorios";
@@ -215,6 +215,12 @@ export function createApp(makeTransport: (env: AppEnv) => Transport, deps: AppDe
 			resposta ??
 			fail(c, 404, "nao_encontrado", "Esta nota não foi emitida por este cofre. Cancele-a pelo portal nacional.")
 		);
+	});
+
+	app.post("/admin/notas/conferir", async (c) => {
+		const input = parseJson<{ id?: unknown }>(await c.req.arrayBuffer());
+		if (typeof input?.id !== "string") return fail(c, 400, "requisicao_invalida", "Informe o id da nota.");
+		return conferirPeloPainel(c, makeTransport(c.env), input.id);
 	});
 
 	app.get("/admin/audit", async (c) => {
